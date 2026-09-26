@@ -412,6 +412,7 @@ const NAV = [
 const SETTINGS_TABS = [
   { perm: "settings", href: "#/settings", icon: "settings", name: "Umumiy" },
   { perm: "settings", href: "#/settings/receipt", icon: "sales", name: "Chek" },
+  { perm: "settings", href: "#/settings/sync", icon: "transfer", name: "Sinxronlash" },
 ];
 
 function visibleNav() {
@@ -494,6 +495,7 @@ function layout(content) {
           <div class="crumbs">${trail.map((t, i) => i < trail.length - 1
             ? `<span class="muted">${esc(t)}</span><i class="chev">${icon("chevron")}</i>` : `<b>${esc(t)}</b>`).join("")}</div>
           <div class="top-actions">
+            ${state.settings.role === "phone" ? `<a href="${can("settings") ? "#/settings/sync" : "#"}" id="sync-badge" class="sync-badge">${icon("transfer")}</a>` : ""}
             ${tabs.length ? `<a href="${tabs[0].href}" class="top-btn ${inSettings ? "active" : ""}" title="Sozlamalar">
               ${icon("gear")}<span>Sozlamalar</span></a>` : ""}
             <div class="top-user">
@@ -540,6 +542,7 @@ function layout(content) {
   $("#burger").addEventListener("click", () => document.body.classList.toggle("nav-open"));
   $("#side-backdrop").addEventListener("click", () => document.body.classList.remove("nav-open"));
   document.body.classList.remove("nav-open");
+  refreshSyncBadge();
   return $("#view");
 }
 
@@ -3178,6 +3181,132 @@ async function viewReceiptSettings() {
   }));
 }
 
+// ------------------------------------------------------------ sinxronlash (kompyuter <-> telefon)
+
+const SYNC_STATES = { ok: ["ok", "Sinxronlangan"], offline: ["warn", "Kompyuter topilmadi (oflayn ishlayapti)"],
+  error: ["off", "Xato"], unpaired: ["off", "Kompyuter bu telefonni uzgan"], idle: ["", "Kutilmoqda"] };
+
+async function viewSync() {
+  const st = await api("GET", "/api/sync/status");
+  if (st.role === "hub") return viewSyncHub(st);
+  return viewSyncPhone(st);
+}
+
+function viewSyncHub(st) {
+  const view = layout(`
+    <div class="panel sync-panel" style="max-width:760px">
+      <h2>📱 Telefonlar bilan sinxronlash</h2>
+      <p class="muted">Telefondagi EproPos ilovasi kompyutersiz ham to'liq ishlaydi. Telefon shu kompyuter bilan
+        <b>bitta Wi-Fi'ga</b> tushganda sotuvlar, tovarlar, qoldiqlar va boshqa ma'lumotlar o'zi almashadi.</p>
+      <h3>Telefonni ulash</h3>
+      <ol class="help-list">
+        <li>Telefonda EproPos ilovasini oching → <b>Sozlamalar → Sinxronlash</b></li>
+        <li><b>Kompyuterni qidirish</b> ni bosing (yoki manzilni yozing:
+          ${st.urls.length ? st.urls.map((u) => `<code>${esc(u)}</code>`).join(" ") : "<i>kompyuter tarmoqqa ulanmagan</i>"})</li>
+        <li>Shu yerdagi administrator parolini kiriting</li>
+      </ol>
+      <h3>Ulangan telefonlar</h3>
+      ${st.devices.length ? `<table class="list">
+        <thead><tr><th>Qurilma</th><th>Ulangan</th><th>Oxirgi sinxronlash</th><th>IP</th><th></th></tr></thead>
+        <tbody>${st.devices.map((d) => `<tr><td><b>${esc(d.name || "Telefon")}</b> <small class="muted">#${esc(d.node)}</small></td>
+          <td class="muted">${esc(d.created_at.slice(0, 16))}</td><td>${d.last_sync ? esc(d.last_sync.slice(0, 16)) : "—"}</td>
+          <td class="muted">${esc(d.last_ip || "")}</td>
+          <td class="right"><button class="btn small danger" data-rm="${d.id}">Uzish</button></td></tr>`).join("")}</tbody>
+      </table>` : `<p class="muted">Hali telefon ulanmagan</p>`}
+    </div>`);
+  $$("[data-rm]", view).forEach((b) => b.addEventListener("click", safe(async () => {
+    if (!confirm("Bu telefon uzilsinmi? U endi ma'lumot almasha olmaydi (telefondagi ma'lumotlar qoladi).")) return;
+    await api("DELETE", "/api/sync/devices/" + b.dataset.rm);
+    router();
+  })));
+}
+
+function viewSyncPhone(st) {
+  const [cls, label] = SYNC_STATES[st.state] || ["", st.state || ""];
+  const view = layout(`
+    <div class="panel sync-panel" style="max-width:640px">
+      <h2>🔄 Kompyuter bilan sinxronlash</h2>
+      ${st.paired ? `
+        <div class="sync-card">
+          <div><small class="muted">Ulangan kompyuter</small><b>${esc(st.hub_shop || "EproPos")}</b><span class="muted">${esc(st.hub_url || "")}</span></div>
+          <span class="badge ${cls}">${label}</span>
+        </div>
+        <div class="sync-facts">
+          <div><small class="muted">Oxirgi sinxronlash</small><b>${esc(st.last_ok || "—")}</b></div>
+          <div><small class="muted">Yuborilmagan o'zgarishlar</small><b>${st.pending}</b></div>
+        </div>
+        ${st.last_error && st.state !== "ok" ? `<div class="notice error-notice">${esc(st.last_error)}</div>` : ""}
+        <p class="muted">Telefon kompyuter bilan bitta Wi-Fi'da bo'lganda har 15 soniyada o'zi almashadi.
+          Kompyuter topilmasa ham ilova oddiy ishlayveradi — o'zgarishlar keyin yuboriladi.</p>
+        <div class="actions"><button class="btn danger-text" id="unpair">Uzish</button>
+          <button class="btn primary" id="now">🔄 Hozir sinxronlash</button></div>` : `
+        <p class="muted">Ilova hozir <b>faqat shu telefonda</b> ishlayapti. Kompyuterdagi EproPos bilan ulasangiz,
+          ma'lumotlar bir tarmoqqa tushganda o'zi almashadi.</p>
+        <div class="notice">Telefonda hali ma'lumot bo'lmasa — hammasi kompyuterdan olinadi va <b>kompyuterdagi parol bilan</b> kirasiz.
+          Ma'lumot bo'lsa — ikkala baza birlashtiriladi.</div>
+        <button class="btn big" id="scan">${icon("search")} Kompyuterni qidirish</button>
+        <div id="found"></div>
+        <form id="connect" class="sync-connect">
+          <label><span>Kompyuter manzili</span><input name="url" placeholder="192.168.1.10:8100" required autocomplete="off"></label>
+          <label><span>Kompyuterdagi administrator paroli</span><input name="pin" type="password" inputmode="numeric" maxlength="4" required></label>
+          <button class="btn primary big">Ulash</button>
+        </form>`}
+    </div>`);
+  const now = $("#now", view);
+  if (now) now.addEventListener("click", safe(async () => {
+    const s = await api("POST", "/api/sync/now");
+    toast(s.state === "ok" ? "Sinxronlandi ✅" : (s.last_error || "Kompyuter topilmadi"), s.state !== "ok");
+    router();
+  }));
+  const unpair = $("#unpair", view);
+  if (unpair) unpair.addEventListener("click", safe(async () => {
+    if (!confirm("Kompyuterdan uzilsinmi? Telefondagi ma'lumotlar qoladi, lekin endi almashmaydi.")) return;
+    await api("POST", "/api/sync/disconnect");
+    router();
+  }));
+  const scan = $("#scan", view);
+  if (scan) scan.addEventListener("click", safe(async () => {
+    $("#found", view).innerHTML = `<p class="muted">Qidirilmoqda... (bir necha soniya)</p>`;
+    const list = await api("POST", "/api/sync/scan");
+    $("#found", view).innerHTML = list.length ? list.map((h) => `<button type="button" class="btn sync-hub" data-url="${esc(h.url)}">
+        ${icon("check")} <b>${esc(h.shop)}</b> <span class="muted">${esc(h.url)}</span></button>`).join("")
+      : `<p class="error">Kompyuter topilmadi. Kompyuterda EproPos ochiqligini va telefon o'sha Wi-Fi'da ekanini tekshiring,
+          yoki manzilni qo'lda yozing (kompyuterda Sozlamalar → Sinxronlash sahifasida ko'rsatilgan).</p>`;
+    $$("[data-url]", view).forEach((b) => b.addEventListener("click", () => {
+      $("input[name=url]", view).value = b.dataset.url;
+      $("input[name=pin]", view).focus();
+    }));
+  }));
+  const form = $("#connect", view);
+  if (form) form.addEventListener("submit", safe(async (e) => {
+    e.preventDefault();
+    const res = await api("POST", "/api/sync/connect", { url: form.url.value, pin: form.pin.value });
+    if (res.cloned) {
+      toast(`Ulandi: ${res.shop} ✅ Endi kompyuterdagi parolingiz bilan kiring`);
+      state.user = null;
+      renderLogin();
+    } else {
+      toast(`Ulandi: ${res.shop} ✅ Ma'lumotlar birlashtirildi`);
+      router();
+    }
+  }));
+}
+
+// Telefonda: yuqori panelda sinxronlash holati (har 30 soniyada yangilanadi)
+async function refreshSyncBadge() {
+  const el = $("#sync-badge");
+  if (!el || state.settings.role !== "phone") return;
+  try {
+    const st = await api("GET", "/api/sync/status");
+    const cls = !st.paired ? "none" : st.state === "ok" ? "ok" : "off";
+    el.className = "sync-badge " + cls;
+    el.title = !st.paired ? "Kompyuterga ulanmagan" : (SYNC_STATES[st.state] || ["", st.state])[1] +
+      (st.pending ? ` · ${st.pending} ta o'zgarish kutmoqda` : "");
+    el.innerHTML = `${icon("transfer")}${st.pending && st.paired ? `<small>${st.pending}</small>` : ""}`;
+  } catch { /* chiqib ketgan */ }
+}
+setInterval(refreshSyncBadge, 30000);
+
 // ------------------------------------------------------------ router
 
 const routes = [
@@ -3202,6 +3331,7 @@ const routes = [
   [/^#\/users$/, viewUsers, ["users"]],
   [/^#\/settings$/, viewSettings, ["settings"]],
   [/^#\/settings\/receipt$/, viewReceiptSettings, ["settings"]],
+  [/^#\/settings\/sync$/, viewSync, ["settings"]],
   [/^#\/journal$/, viewJournal, ["journal"]],
   [/^#\/integrations$/, viewIntegrations, ["integrations"]],
   [/^#\/integrations\/telegram$/, viewTelegram, ["integrations"]],

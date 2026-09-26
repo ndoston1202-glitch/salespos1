@@ -3383,10 +3383,12 @@ class SyncWorker:
 sync_worker = None
 
 
-@route("GET", "/api/sync/status", ("settings",))
+@route("GET", "/api/sync/status")
 def sync_status(conn, user, params, data, query):
     res = {"role": ROLE, "node": conn.sync_node}
     if ROLE == "hub":
+        if "settings" not in user["permissions"]:
+            return res
         res["devices"] = rows(conn.execute(
             "SELECT id, node, name, created_at, last_sync, last_ip FROM sync_devices WHERE active = 1 ORDER BY id DESC"))
         res["urls"] = lan_urls()
