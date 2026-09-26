@@ -10,7 +10,8 @@ def generated = layout.buildDirectory.dir("epropos").get().asFile
 
 // Asosiy dastur fayllari (server.py, static/...) bitta joyda - yig'ishdan oldin shu yerga nusxalanadi
 // (konfiguratsiya paytida: Chaquopy vazifalari preBuild'dan oldin ham ishlaydi)
-sync {
+project.delete(generated)
+project.copy {
     from(repoRoot) {
         include "server.py", "sync.py", "telegram.py", "xlsx.py"
         into "python"
