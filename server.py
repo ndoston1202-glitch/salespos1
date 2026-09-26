@@ -47,6 +47,7 @@ DB_PATH = os.environ.get("EPROPOS_DB", os.path.join(BASE_DIR, "epropos.db"))
 PORT = int(os.environ.get("EPROPOS_PORT", "8100"))
 # hub - kompyuter (asosiy baza, telefonlar unga ulanadi); phone - telefondagi ilova (o'z bazasi bilan oflayn ishlaydi)
 ROLE = os.environ.get("EPROPOS_ROLE", "hub")
+PLATFORM = os.environ.get("EPROPOS_PLATFORM", "android" if ROLE == "phone" else "desktop")
 STATIC_DIR = os.environ.get("EPROPOS_STATIC", STATIC_DIR)
 SESSION_DAYS = 7
 
@@ -788,7 +789,7 @@ def delete_product(conn, user, params, data, query):
 
 @route("GET", "/api/settings")
 def read_settings(conn, user, params, data, query):
-    return dict(get_settings(conn), role=ROLE)
+    return dict(get_settings(conn), role=ROLE, platform=PLATFORM, native=sorted(NATIVE))
 
 
 @route("PUT", "/api/settings", ("settings",))
@@ -3567,6 +3568,8 @@ UPDATE_REPO = os.environ.get("EPROPOS_UPDATE_REPO", "ndoston1202-glitch/salespos
 UPDATE_BRANCH = "main"
 APK_VERSION = int(os.environ.get("EPROPOS_APK_VERSION") or 0)  # telefonda: o'rnatilgan APK raqami
 APK_URL = f"https://github.com/{UPDATE_REPO}/releases/download/android-latest/EproPos.apk"
+IOS_RELEASE = f"https://github.com/{UPDATE_REPO}/releases/download/ios-latest"
+ALTSTORE_SOURCE = IOS_RELEASE + "/altstore.json"
 KEEP = ("epropos.db", "epropos.pid", "epropos.log", "uploads/", "tools/", ".git/")  # yangilanishda tegilmaydi
 
 
@@ -3621,7 +3624,12 @@ class Updater:
             return self.cache
         res = {"kind": "apk" if ROLE == "phone" else "desktop", "current": RUNNING_VERSION, "available": False}
         try:
-            if ROLE == "phone":
+            if PLATFORM == "ios":  # iPhone: AltStore orqali yangilanadi
+                latest = fetch_json(IOS_RELEASE + "/version.json")
+                res.update(kind="ios", latest=latest.get("version"), notes=latest.get("notes") or [],
+                           source=ALTSTORE_SOURCE,
+                           available=version_key(latest.get("version")) > version_key(RUNNING_VERSION))
+            elif ROLE == "phone":
                 latest = fetch_json(APK_URL.rsplit("/", 1)[0] + "/version.json")
                 res.update(latest=latest.get("version"), notes=latest.get("notes") or [], apk_url=APK_URL,
                            available=APK_VERSION > 0 and int(latest.get("version_code") or 0) > APK_VERSION)
@@ -3693,6 +3701,19 @@ def spawn_new_server():
                      cwd=BASE_DIR, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                      creationflags=flags, close_fds=True, start_new_session=os.name != "nt")
     os._exit(0)
+
+
+# Ilova (iPhone) o'z imkoniyatlarini shu yerga qo'shadi: masalan NATIVE["print"] - chop etish oynasi
+NATIVE = {}
+
+
+@route("POST", r"/api/native/(\w+)")
+def native_call(conn, user, params, data, query):
+    fn = NATIVE.get(params[0])
+    if not fn:
+        raise ApiError(404, "Bu qurilmada mavjud emas")
+    fn()
+    return {"ok": True}
 
 
 @route("GET", "/api/update", ("settings",))

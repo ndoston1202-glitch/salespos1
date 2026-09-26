@@ -132,9 +132,15 @@ function closeModal() {
 // ------------------------------------------------------------ kamera bilan shtrix-kod skanerlash
 
 // Android ilovada - tizimning tayyor skaneri (Google), brauzerda - BarcodeDetector bo'lsa kamera oynasi
+// iPhone va boshqa telefonlarda: kamera bilan surat -> kod rasmdan o'qiladi (zxing)
+const IS_MOBILE = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+
+function liveScanSupported() {
+  return "BarcodeDetector" in window && !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+}
+
 function canScan() {
-  return !!(window.EproPosApp && window.EproPosApp.scanBarcode)
-    || ("BarcodeDetector" in window && navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+  return !!(window.EproPosApp && window.EproPosApp.scanBarcode) || liveScanSupported() || IS_MOBILE;
 }
 
 function scanBarcode() {
@@ -144,7 +150,80 @@ function scanBarcode() {
       window.EproPosApp.scanBarcode();
     });
   }
-  return webScan();
+  return liveScanSupported() ? webScan() : photoScan();
+}
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector(`script[src="${src}"]`) && window.ZXing) return resolve();
+    const el = document.createElement("script");
+    el.src = src;
+    el.onload = () => resolve();
+    el.onerror = () => reject(new Error("Skaner yuklanmadi"));
+    document.head.appendChild(el);
+  });
+}
+
+function photoScan() {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.setAttribute("capture", "environment");
+    input.style.display = "none";
+    document.body.appendChild(input);
+    input.addEventListener("change", async () => {
+      const file = input.files && input.files[0];
+      input.remove();
+      if (!file) return resolve(null);
+      try {
+        resolve(await decodeImageFile(file));
+      } catch {
+        toast("Shtrix-kod o'qilmadi. Kodni yaqinroqdan, aniq va to'g'ri suratga oling", true);
+        resolve(null);
+      }
+    });
+    input.click();
+  });
+}
+
+async function decodeImageFile(file) {
+  await loadScript("/vendor/zxing.min.js");
+  const ZX = window.ZXing;
+  const url = URL.createObjectURL(file);
+  const img = await new Promise((ok, fail) => {
+    const i = new Image();
+    i.onload = () => ok(i);
+    i.onerror = fail;
+    i.src = url;
+  });
+  URL.revokeObjectURL(url);
+  const hints = new Map();
+  hints.set(ZX.DecodeHintType.TRY_HARDER, true);
+  const reader = new ZX.MultiFormatReader();
+  reader.setHints(hints);
+  // katta suratni kichraytiramiz; topilmasa - boshqa o'lcham va 90° burilgan holda
+  for (const max of [1400, 900, 2200]) {
+    for (const rot of [0, 90]) {
+      const k = Math.min(1, max / Math.max(img.width, img.height));
+      const w = Math.round(img.width * k);
+      const h = Math.round(img.height * k);
+      const canvas = document.createElement("canvas");
+      canvas.width = rot ? h : w;
+      canvas.height = rot ? w : h;
+      const ctx = canvas.getContext("2d");
+      if (rot) {
+        ctx.translate(h, 0);
+        ctx.rotate(Math.PI / 2);
+      }
+      ctx.drawImage(img, 0, 0, w, h);
+      try {
+        const bitmap = new ZX.BinaryBitmap(new ZX.HybridBinarizer(new ZX.HTMLCanvasElementLuminanceSource(canvas)));
+        return reader.decode(bitmap).getText();
+      } catch { /* keyingi urinish */ }
+    }
+  }
+  throw new Error("Topilmadi");
 }
 
 async function webScan() {
@@ -980,7 +1059,11 @@ function printReceipt(order) {
   area.innerHTML = receiptHtml(order, cfg);
   const img = $("img", area);
   // Android ilovada - tizimning chop etish oynasi (window.print WebView'da ishlamaydi)
-  const print = () => (window.EproPosApp ? window.EproPosApp.print() : window.print());
+  const print = () => {
+    if (window.EproPosApp) window.EproPosApp.print();
+    else if ((state.settings.native || []).indexOf("print") >= 0) api("POST", "/api/native/print").catch(() => {});  // iPhone
+    else window.print();
+  };
   if (img && !img.complete) img.onload = img.onerror = print;
   else print();
 }
@@ -3445,7 +3528,12 @@ function updateHtml(u) {
   return `<div class="sync-card"><div><small class="muted">Yangi versiya chiqdi</small><b>EproPos ${esc(u.latest || "")}</b></div>
       <span class="badge warn">Yangi</span></div>
     ${notes ? `<h3>Nimalar yangi</h3>${notes}` : ""}
-    ${u.kind === "apk"
+    ${u.kind === "ios"
+      ? `<p class="muted">iPhone'da ilova <b>AltStore</b> orqali yangilanadi: AltStore ilovasini oching →
+          <b>My Apps</b> → EproPos yonidagi <b>Update</b> tugmasi. Ma'lumotlar saqlanib qoladi.</p>
+         <p class="muted">Yangilanish ko'rinmasa: AltStore → <b>Browse → Sources → +</b> va shu manzilni qo'shing:<br>
+           <code>${esc(u.source || "")}</code></p>`
+      : u.kind === "apk"
       ? `<p class="muted">Yangi versiya yuklab olinadi va o'rnatish oynasi ochiladi — <b>"O'rnatish"</b> ni bosing.
           Telefondagi ma'lumotlar saqlanib qoladi.</p>
          ${window.EproPosApp && window.EproPosApp.installApk

@@ -1,9 +1,9 @@
 {
-  "version": "1.5.0",
+  "version": "1.6.0",
   "date": "2026-09-26",
   "notes": [
-    "Telefonda kamera bilan shtrix-kod skanerlash: Kassa, Kirim, Inventarizatsiya, Hisobdan chiqarish va mahsulot kartasida 📷 tugma",
-    "Dastur ichida yangilash: Sozlamalar → Yangilash",
-    "Internet orqali sinxronlash: telefon va kompyuter turli tarmoqlarda bo'lsa ham"
+    "iPhone ilovasi (AltStore orqali): internetsiz ishlaydi, kompyuter bilan sinxronlanadi",
+    "iPhone va telefon brauzerida ham kamera bilan shtrix-kod skanerlash (surat orqali)",
+    "Telefonda kamera bilan shtrix-kod skanerlash: Kassa, Kirim, Inventarizatsiya va mahsulot kartasida 📷 tugma"
   ]
 }

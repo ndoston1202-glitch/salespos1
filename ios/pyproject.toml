@@ -1,0 +1,33 @@
+# EproPos iPhone ilovasi (BeeWare Briefcase + Toga).
+# Dastur (server.py) iPhone'ning o'zida ishlaydi, oyna - WKWebView. Yig'ish: .github/workflows/ios.yml
+[tool.briefcase]
+project_name = "EproPos"
+bundle = "uz.epropos"
+version = "1.5.0"
+url = "https://github.com/ndoston1202-glitch/salespos1"
+license.file = "LICENSE"
+author = "EproPos"
+author_email = "epropos@example.com"
+
+[tool.briefcase.app.epropos]
+formal_name = "EproPos"
+description = "Do'kon uchun savdo va ombor dasturi"
+long_description = "Kassa, ombor, mijozlar va moliya. Internetsiz ishlaydi, kompyuter bilan sinxronlanadi."
+sources = ["src/epropos"]
+icon = "icons/epropos"
+splash_background_color = "#0F1A14"
+permission.camera = "Tovar shtrix-kodini skanerlash uchun kamera kerak"
+requires = []
+
+[tool.briefcase.app.epropos.iOS]
+requires = ["toga-iOS~=0.5.0", "std-nslog~=1.0.3"]
+min_os_version = "15.0"
+
+[tool.briefcase.app.epropos.iOS.info]
+NSLocalNetworkUsageDescription = "Shu Wi-Fi'dagi kompyuterdagi EproPos bilan ma'lumot almashish uchun"
+NSPhotoLibraryUsageDescription = "Shtrix-kod rasmini tanlash uchun"
+UIRequiresFullScreen = true
+
+[tool.briefcase.app.epropos.iOS.info.NSAppTransportSecurity]
+NSAllowsArbitraryLoads = true
+NSAllowsLocalNetworking = true
