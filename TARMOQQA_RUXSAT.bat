@@ -11,7 +11,7 @@ if errorlevel 1 (
     exit /b
 )
 
-set PORT=8000
+set PORT=8100
 if not "%EPROPOS_PORT%"=="" set PORT=%EPROPOS_PORT%
 
 echo [1/4] Python uchun qo'yilgan taqiqlar olib tashlanmoqda...

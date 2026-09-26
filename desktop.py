@@ -17,7 +17,7 @@ import urllib.request
 import webbrowser
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PORT = int(os.environ.get("EPROPOS_PORT", "8000"))
+PORT = int(os.environ.get("EPROPOS_PORT", "8100"))  # CafePOS 8000 da - ikkalasi birga ishlay oladi
 URL = f"http://localhost:{PORT}/"
 LOG_PATH = os.path.join(BASE_DIR, "epropos.log")
 
@@ -26,14 +26,20 @@ LOG_PATH = os.path.join(BASE_DIR, "epropos.log")
 _opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
-def server_running():
+def server_status():
+    """"ours" - EproPos ishlayapti, "other" - portni boshqa dastur egallagan, None - hech narsa yo'q."""
     try:
-        with _opener.open(URL + "api/me", timeout=1.5):
-            return True
-    except urllib.error.HTTPError as e:
-        return e.code == 401  # server javob berdi, faqat hali kirilmagan
+        with _opener.open(URL + "api/me", timeout=1.5) as res:
+            server = res.headers.get("Server", "")
+    except urllib.error.HTTPError as e:  # 401 - server javob berdi, faqat hali kirilmagan
+        server = e.headers.get("Server", "")
     except OSError:
-        return False
+        return None
+    return "ours" if "EproPos" in server else "other"
+
+
+def server_running():
+    return server_status() == "ours"
 
 
 def start_server():
@@ -268,6 +274,10 @@ def install_shortcuts():
 def main():
     if "--install" in sys.argv:
         return install_shortcuts()
+    if server_status() == "other":
+        show_error(f"{PORT}-portni boshqa dastur (masalan, CafePOS) egallagan.\n"
+                   "O'sha dasturni to'xtating yoki EPROPOS_PORT bilan boshqa port bering.")
+        sys.exit(1)
     if not server_running() and not start_server():
         tail = ""
         try:

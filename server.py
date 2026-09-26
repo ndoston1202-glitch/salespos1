@@ -1,7 +1,7 @@
 """EproPos - do'konlar (magazinlar) uchun savdo va ombor tizimi.
 
 Faqat Python standart kutubxonasi ishlatiladi (pip install shart emas).
-Ishga tushirish:  python server.py   ->  http://localhost:8000
+Ishga tushirish:  python server.py   ->  http://localhost:8100
 """
 
 import atexit
@@ -36,7 +36,7 @@ MAX_BODY = 8 * 1024 * 1024
 MAX_IMAGE = 3 * 1024 * 1024
 IMAGE_TYPES = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
 DB_PATH = os.environ.get("EPROPOS_DB", os.path.join(BASE_DIR, "epropos.db"))
-PORT = int(os.environ.get("EPROPOS_PORT", "8000"))
+PORT = int(os.environ.get("EPROPOS_PORT", "8100"))
 SESSION_DAYS = 7
 
 ROLES = ("admin", "cashier", "staff")  # staff = ruxsatlari qo'lda belgilangan xodim

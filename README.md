@@ -67,7 +67,7 @@ Administratorning standart paroli: **1234** (Xodimlar bo'limida o'zgartiring).
 
 ## 📶 Telefon va planshetdan kirish
 Qurilma kompyuter bilan bitta Wi-Fi'da bo'lsin. Manzil **Sozlamalar → Umumiy** sahifasida ko'rsatiladi
-(masalan `http://192.168.1.10:8000`). Ochilmasa — **TARMOQQA_RUXSAT.bat**.
+(masalan `http://192.168.1.10:8100`). Ochilmasa — **TARMOQQA_RUXSAT.bat**.
 
 ## 🛠️ Texnologiya
 - Backend: Python standart kutubxonasi (`http.server` + `sqlite3`) — `server.py`
@@ -82,5 +82,5 @@ python -m unittest discover tests
 ## ⚙️ Sozlamalar (ixtiyoriy)
 | O'zgaruvchi | Standart | Tavsif |
 |-------------|----------|--------|
-| `EPROPOS_PORT` | `8000` | Server porti |
+| `EPROPOS_PORT` | `8100` | Server porti |
 | `EPROPOS_DB` | `epropos.db` | Baza fayli yo'li |
