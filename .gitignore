@@ -1,8 +1,8 @@
-cafepos.db
-cafepos.db-*
+epropos.db
+epropos.db-*
 __pycache__/
 *.pyc
 uploads/
-cafepos.pid
-cafepos.log
+epropos.pid
+epropos.log
 android/build/

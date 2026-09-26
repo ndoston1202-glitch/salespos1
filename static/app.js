@@ -1,15 +1,13 @@
-// CafePOS - interfeys (kutubxonasiz, oddiy JavaScript)
+// EproPos - do'kon uchun savdo va ombor dasturi: interfeys (kutubxonasiz, oddiy JavaScript)
 "use strict";
 
-const state = { user: null, categories: [], products: [], settings: { cafe_name: "CafePOS", service_percent: 0 } };
+const state = { user: null, categories: [], products: [], settings: { shop_name: "EproPos", allow_negative: "0" } };
 
-const ROLE_NAMES = { admin: "Administrator", cashier: "Kassir", waiter: "Ofitsiant", cook: "Oshpaz", staff: "Xodim" };
-const PRINTER_KINDS = {
-  system: "Kompyuterga ulangan (USB / Wi-Fi)",
-  network: "Tarmoq termoprinteri (IP manzil)",
-  windows: "Ulashilgan printer (eski)",
-};
-const METHOD_NAMES = { cash: "Naqd", card: "Karta", payme: "Payme", click: "Click", debt: "Qarzga" };
+const ROLE_NAMES = { admin: "Administrator", cashier: "Kassir", staff: "Xodim" };
+const METHOD_NAMES = { cash: "Naqd", card: "Karta", payme: "Payme", click: "Click", debt: "Nasiya" };
+// O'lchov birliklari (serverdagi UNITS bilan bir xil)
+const UNITS = { dona: "dona", kg: "kg", g: "gramm", l: "litr", m: "metr", qadoq: "qadoq", quti: "quti" };
+const FRACTION_UNITS = ["kg", "g", "l", "m"];
 
 // ------------------------------------------------------------ yordamchilar
 
@@ -50,10 +48,9 @@ function go(hash) {
   else location.hash = hash;
 }
 
-// "Asosiy zal · Stol 3" yoki "Olib ketish"
-function place(o) {
-  if (o.type === "takeaway") return "Olib ketish";
-  return [o.hall_name, o.table_name].filter(Boolean).join(" · ");
+// Miqdor: 2 -> "2", 1.255 -> "1.255"
+function fmtQty(q) {
+  return String(Math.round((+q || 0) * 1000) / 1000);
 }
 
 // Foydalanuvchida shu ruxsatlardan birortasi bormi
@@ -168,9 +165,8 @@ function formData(form) {
 // ------------------------------------------------------------ telefonga ilova qilib o'rnatish
 
 let installPrompt = null;
-const APK_URL = "https://github.com/ndoston1202-glitch/cafepos/releases/download/android-latest/CafePOS.apk";
-// CafePOS Android ilovasi ichida ochilganmi (ilova window.CafePOSApp ni beradi)
-const inAndroidApp = () => !!window.CafePOSApp;
+// Android ilova ichida ochilganmi (ilova window.EproPosApp ni beradi)
+const inAndroidApp = () => !!window.EproPosApp;
 const isStandalone = () => matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
 const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 
@@ -182,7 +178,7 @@ window.addEventListener("beforeinstallprompt", (e) => {
 window.addEventListener("appinstalled", () => {
   installPrompt = null;
   $$(".install-btn").forEach((b) => b.classList.add("hidden"));
-  toast("CafePOS ilova sifatida o'rnatildi ✅");
+  toast("EproPos ilova sifatida o'rnatildi ✅");
 });
 if ("serviceWorker" in navigator && window.isSecureContext) {
   navigator.serviceWorker.register("/sw.js").catch(() => {});
@@ -198,7 +194,7 @@ function installButton(extraClass = "") {
 
 function bindInstallButtons(root = document) {
   $$("[data-install]", root).forEach((b) => b.addEventListener("click", installApp));
-  $$("[data-change-server]", root).forEach((b) => b.addEventListener("click", () => window.CafePOSApp.changeServer()));
+  $$("[data-change-server]", root).forEach((b) => b.addEventListener("click", () => window.EproPosApp.changeServer()));
 }
 
 async function installApp() {
@@ -214,19 +210,16 @@ async function installApp() {
 function showInstallHelp() {
   const origin = location.origin;
   const android = `
-    <h3>🤖 Android</h3>
+    <h3>🤖 Android (Chrome)</h3>
     <ol>
-      <li>Telefonda ushbu havolani oching va <b>CafePOS.apk</b> ni yuklab oling:<br>
-        <a href="${APK_URL}" target="_blank" rel="noopener">⬇️ CafePOS ilovasini yuklab olish</a></li>
-      <li>Yuklangan faylni oching. Telefon "noma'lum manbadan o'rnatish"ga ruxsat so'rasa — <b>Ruxsat berish</b>
-        (Chrome yoki Fayllar ilovasi uchun), keyin <b>O'rnatish</b></li>
-      <li><b>CafePOS</b> ilovasini oching — u shu Wi-Fi'dagi CafePOS serverini o'zi topadi.
-        Topmasa, manzilni qo'lda yozing: <code class="copyable">${esc(location.host)}</code></li>
+      <li>EproPos'ni <b>Chrome</b>'da oching: <code class="copyable">${esc(origin)}</code></li>
+      <li>O'ng yuqoridagi <b>⋮</b> menyu → <b>"Bosh ekranga qo'shish" / "Add to Home screen"</b></li>
+      <li>Bosh ekranda EproPos ikonkasi paydo bo'ladi</li>
     </ol>`;
   const ios = `
     <h3>🍏 iPhone / iPad (Safari)</h3>
     <ol>
-      <li>CafePOS'ni <b>Safari</b>'da oching: <code>${esc(origin)}</code></li>
+      <li>EproPos'ni <b>Safari</b>'da oching: <code>${esc(origin)}</code></li>
       <li>Pastdagi <b>Ulashish</b> tugmasi (kvadrat va yuqoriga strelka)</li>
       <li><b>"Na ekran «Domoy»" / "Add to Home Screen"</b> → <b>Qo'shish</b></li>
     </ol>`;
@@ -234,7 +227,7 @@ function showInstallHelp() {
     <div class="modal-head"><h2>📲 Telefonga ilova qilib o'rnatish</h2>
       <button type="button" class="icon-btn" data-close aria-label="Yopish">✕</button></div>
     <div class="install-help">${isIOS() ? ios + android : android + ios}
-      <p class="muted">O'rnatilgach CafePOS bosh ekrandan o'z ikonkasi bilan, brauzer paneli va Google logosisiz ochiladi.</p>
+      <p class="muted">O'rnatilgach EproPos bosh ekrandan o'z ikonkasi bilan, brauzer paneli va Google logosisiz ochiladi.</p>
     </div>
     <div class="actions"><button class="btn primary" data-close>Tushunarli</button></div>`, (m) => {
     $$(".copyable", m).forEach((c) => c.addEventListener("click", async () => {
@@ -251,8 +244,8 @@ function renderLogin() {
       <div class="auth-glow"></div>
       <section class="auth-hero">
         <img class="auth-hero-logo" src="/img/logo.png" alt="CafePos — ERP dasturi">
-        <h1>Kafengiz nazorat ostida<br><span>doim va hamma joyda</span></h1>
-        <p>Stollar, buyurtmalar, oshxona va kassani yagona tizimda boshqaring</p>
+        <h1>Do'koningiz nazorat ostida<br><span>doim va hamma joyda</span></h1>
+        <p>Kassa, ombor, mijozlar va moliyani yagona tizimda boshqaring</p>
       </section>
       <div class="pin-card" id="pin-card">
         <h2>Xush kelibsiz</h2>
@@ -372,6 +365,8 @@ const ICONS = {
   out: '<path d="M12 19V5M5 12l7-7 7 7"/>',
   collapse: '<path d="m11 17-5-5 5-5M18 17l-5-5 5-5"/>',
   expand: '<path d="m6 17 5-5-5-5M13 17l5-5-5-5"/>',
+  barcode: '<path d="M3 5v14M7 5v14M10 5v14M14 5v14M17 5v14M21 5v14"/>',
+  warehouse: '<path d="M3 21V8l9-5 9 5v13"/><path d="M7 21v-8h10v8M7 17h10"/>',
   journal: '<path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/><path d="M9 7h7M9 11h5"/>',
   plug: '<path d="M9 2v6M15 2v6M6 8h12v4a6 6 0 0 1-12 0Z"/><path d="M12 18v4"/>',
   telegram: '<path d="m22 3-9.5 18-3-7.5L2 10.5Z"/><path d="m9.5 13.5 5-5"/>',
@@ -385,33 +380,37 @@ function icon(name) {
 // Chap menyu: bo'lim {perm, href, icon, name} yoki guruh {icon, name, children}
 const NAV = [
   { perm: "reports", href: "#/dashboard", icon: "home", name: "Bosh sahifa" },
-  { perm: "tables", href: "#/tables", icon: "tables", name: "Stollar" },
-  { perm: "kitchen", href: "#/kitchen", icon: "kitchen", name: "Oshxona" },
-  { perm: "users", href: "#/users", icon: "users", name: "Sotuvchilar" },
-  { perm: "menu", href: "#/menu", icon: "box", name: "Mahsulotlar" },
+  { perm: "cashier", href: "#/pos", icon: "cashier", name: "Kassa" },
+  { perm: "products", href: "#/products", icon: "box", name: "Mahsulotlar" },
+  { id: "warehouse", icon: "warehouse", name: "Ombor", children: [
+    { perm: "warehouse", href: "#/stock", icon: "list", name: "Qoldiqlar" },
+    { perm: "warehouse", href: "#/purchases", icon: "in", name: "Kirim" },
+    { perm: "warehouse", href: "#/stock/count", icon: "check", name: "Inventarizatsiya" },
+    { perm: "warehouse", href: "#/stock/writeoff", icon: "out", name: "Hisobdan chiqarish" },
+    { perm: "warehouse", href: "#/stock/moves", icon: "transfer", name: "Harakatlar" },
+  ] },
   { id: "crm", icon: "crm", name: "CRM", children: [
     { perm: "crm", href: "#/crm/customers", icon: "users", name: "Mijozlar" },
-    { perm: "crm", href: "#/crm/debts", icon: "debt", name: "Mijozlar qarzi" },
+    { perm: "crm", href: "#/crm/debts", icon: "debt", name: "Nasiyalar" },
   ] },
   { id: "reports", icon: "reports", name: "Hisobotlar", children: [
     { perm: "reports", href: "#/reports", icon: "reports", name: "Hisobot" },
     { perm: "reports", href: "#/reports/sales", icon: "sales", name: "Savdolar" },
   ] },
   { id: "finance", icon: "finance", name: "Moliya", children: [
-    { perm: "finance", href: "#/finance", icon: "cashier", name: "Kassa" },
+    { perm: "finance", href: "#/finance", icon: "cashier", name: "Kassa balansi" },
     { perm: "finance", href: "#/finance/entries", icon: "list", name: "Tranzaksiyalar" },
     { perm: "finance", href: "#/finance/sales", icon: "sales", name: "Savdolar" },
     { perm: "finance", href: "#/finance/types", icon: "plus", name: "Tranzaksiya yaratish" },
     { perm: "finance", href: "#/finance/balances", icon: "scale", name: "Balansni o'rnatish" },
   ] },
+  { perm: "users", href: "#/users", icon: "users", name: "Xodimlar" },
   { perm: "journal", href: "#/journal", icon: "journal", name: "Jurnal" },
   { perm: "integrations", href: "#/integrations", icon: "plug", name: "Integratsiyalar" },
 ];
 // Sozlamalar alohida: yuqori o'ngdagi tugma, ichida yorliqlar
 const SETTINGS_TABS = [
   { perm: "settings", href: "#/settings", icon: "settings", name: "Umumiy" },
-  { perm: "halls", href: "#/tables-admin", icon: "halls", name: "Zallar va stollar" },
-  { perm: "printers", href: "#/printers", icon: "printer", name: "Printerlar" },
   { perm: "settings", href: "#/settings/receipt", icon: "sales", name: "Chek" },
 ];
 
@@ -432,9 +431,9 @@ function defaultRoute() {
   return tabs.length ? tabs[0].href : "#/none";
 }
 
-// Yuqori paneldagi sarlavha: "Savdo › Stollar"
+// Yuqori paneldagi sarlavha: "Ombor › Kirim"
 function pageTrail(hash) {
-  if (hash.startsWith("#/order/")) return ["Stollar", "Buyurtma"];
+  if (hash === "#/purchases/new") return ["Ombor", "Yangi kirim"];
   if (hash === "#/integrations/telegram") return ["Integratsiyalar", "Telegram bot"];
   if (hash === "#/integrations/customer-bot") return ["Integratsiyalar", "Mijozlar boti"];
   for (const item of NAV) {
@@ -442,7 +441,7 @@ function pageTrail(hash) {
     for (const c of item.children || []) if (c.href === hash) return [item.name, c.name];
   }
   const tab = SETTINGS_TABS.find((t) => t.href === hash);
-  return tab ? ["Sozlamalar", tab.name] : ["CafePOS"];
+  return tab ? ["Sozlamalar", tab.name] : ["EproPos"];
 }
 
 function openGroups() {
@@ -479,12 +478,12 @@ function layout(content) {
     <div class="shell">
       <aside class="sidebar">
         <div class="brand">
-          <img class="brand-full" src="/img/logo.png" alt="CafePOS">
-          <img class="brand-icon" src="/img/logo-icon.png" alt="CafePOS">
+          <img class="brand-full" src="/img/logo.png" alt="EproPos">
+          <img class="brand-icon" src="/img/logo-icon.png" alt="EproPos">
           <button class="side-toggle" id="side-toggle"></button>
         </div>
-        ${state.settings.cafe_name && state.settings.cafe_name !== "CafePOS"
-          ? `<div class="cafe-name">${esc(state.settings.cafe_name)}</div>` : ""}
+        ${state.settings.shop_name && state.settings.shop_name !== "EproPos"
+          ? `<div class="cafe-name">${esc(state.settings.shop_name)}</div>` : ""}
         <nav class="side-nav">${nav}</nav>
         ${installButton("side-install")}
       </aside>
@@ -557,304 +556,294 @@ async function loadMenu() {
   ]);
 }
 
-// ------------------------------------------------------------ stollar
+// ------------------------------------------------------------ kassa (sotuv)
+// Savat brauzerda yig'iladi (sahifa yangilansa ham saqlanadi), to'lovda bitta so'rov bilan yuboriladi.
 
-async function viewTables() {
-  const [halls, tables] = await Promise.all([api("GET", "/api/halls"), api("GET", "/api/tables")]);
-  let hall = "all";
-  try { hall = localStorage.getItem("hall") || "all"; } catch { /* ruxsat yo'q */ }
-  if (hall !== "all" && !halls.some((h) => String(h.id) === hall)) hall = "all";
-
-  // Zalsiz stollar ham ko'rinsin
-  const groups = halls.map((h) => ({ id: String(h.id), name: h.name, tables: tables.filter((t) => t.hall_id === h.id) }));
-  const orphan = tables.filter((t) => !t.hall_id);
-  if (orphan.length) groups.push({ id: "none", name: "Zalsiz", tables: orphan });
-
-  const card = (t) => {
-    const o = t.order;
-    return `
-      <div class="table-card ${o ? "busy" : ""}" data-id="${t.id}">
-        <div class="name">${esc(t.name)}</div>
-        <div class="muted">${o ? `Band · ${time(o.created_at)} · ${esc(o.waiter_name || "")}` : `Bo'sh · ${t.seats} o'rin`}</div>
-        ${o ? `<div class="sum">${money(o.total)}</div>` : ""}
-      </div>`;
-  };
-  const busyCount = (list) => list.filter((t) => t.order).length;
-
-  const view = layout(`
-    <div class="toolbar">
-      <h2>Stollar</h2>
-      <button class="btn primary" id="takeaway-btn">🥡 Olib ketish buyurtmasi</button>
-    </div>
-    <div class="hall-tabs">
-      <button class="btn" data-hall="all">Hammasi <small>${busyCount(tables)}/${tables.length}</small></button>
-      ${groups.map((g) => `<button class="btn" data-hall="${g.id}">${esc(g.name)} <small>${busyCount(g.tables)}/${g.tables.length}</small></button>`).join("")}
-    </div>
-    <div id="halls"></div>`);
-
-  function render() {
-    $$("[data-hall]", view).forEach((b) => b.classList.toggle("active", b.dataset.hall === hall));
-    const shown = hall === "all" ? groups : groups.filter((g) => g.id === hall);
-    $("#halls", view).innerHTML = shown.map((g) => `
-      <section class="hall-section">
-        <h3>${esc(g.name)} <span class="muted">· band ${busyCount(g.tables)} / ${g.tables.length}</span></h3>
-        <div class="tables-grid">${g.tables.map(card).join("") || `<p class="muted">Bu zalda stol yo'q</p>`}</div>
-      </section>`).join("") || `<p class="muted">Stollar yo'q. Administrator "⚙️ Zallar va stollar" bo'limida qo'shadi.</p>`;
-    $$(".table-card", view).forEach((c) =>
-      c.addEventListener("click", safe(async () => {
-        const order = await api("POST", "/api/orders", { type: "dine_in", table_id: +c.dataset.id });
-        location.hash = "#/order/" + order.id;
-      })));
-  }
-
-  $$("[data-hall]", view).forEach((b) => b.addEventListener("click", () => {
-    hall = b.dataset.hall;
-    try { localStorage.setItem("hall", hall); } catch { /* ruxsat yo'q */ }
-    render();
-  }));
-  $("#takeaway-btn").addEventListener("click", safe(async () => {
-    const order = await api("POST", "/api/orders", { type: "takeaway" });
-    location.hash = "#/order/" + order.id;
-  }));
-  render();
+function loadCart() {
+  try { return JSON.parse(localStorage.getItem("pos-cart") || "[]"); } catch { return []; }
 }
 
-// ------------------------------------------------------------ buyurtma
+function saveCart(cart) {
+  try { localStorage.setItem("pos-cart", JSON.stringify(cart)); } catch { /* ruxsat yo'q */ }
+}
 
-async function viewOrder(id) {
-  await loadMenu();
-  let order = await api("GET", "/api/orders/" + id);
-  let activeCat = "all";
+const isWeight = (p) => FRACTION_UNITS.indexOf(p.unit) >= 0;
 
-  const title = () => `${order.type === "takeaway" ? "🥡" : "🪑"} ${esc(place(order))} · #${order.id}`;
-  const view = layout(`
-    <div class="toolbar">
-      <button class="btn" id="back-btn">← Orqaga</button>
-      <h2 id="order-title"></h2>
-    </div>
-    <div class="order-layout">
-      <div>
-        <div class="cat-tabs" id="cat-tabs"></div>
-        <div class="products-grid" id="products"></div>
-      </div>
-      <div class="panel cart" id="cart"></div>
-    </div>`);
-
-  const leave = () => {
-    state.leaveHook = null;
-    if (history.length > 1) history.back();
-    else location.hash = "#/tables";
-  };
-  // Taom qo'shilmagan buyurtma - stol band bo'lmasin (boshqa bo'limga o'tilganda ham)
-  const discardIfEmpty = () => {
-    if (order.status === "open" && !order.items.length) {
-      api("POST", `/api/orders/${order.id}/discard`).catch(() => {});
-    }
-  };
-  state.leaveHook = discardIfEmpty;
-
-  $("#back-btn").addEventListener("click", () => {
-    if (order.status !== "open") return leave();
-    if (!order.items.length) {
-      discardIfEmpty();
-      return leave();
-    }
-    openModal(`
-      <div class="modal-head"><h2>Buyurtmani bekor qilishni xohlaysizmi?</h2>
-        <button type="button" class="icon-btn" data-close aria-label="Yopish">✕</button></div>
-      <p class="muted">${esc(place(order))} · ${order.items.length} xil taom · ${money(order.total)}</p>
-      <div class="confirm-actions">
-        <button type="button" class="btn danger big" id="leave-cancel">Ha, bekor qilish</button>
-        <button type="button" class="btn primary big" id="leave-keep">Yo'q, saqlab chiqish</button>
-        <button type="button" class="btn big" data-close>Buyurtmaga qaytish</button>
-      </div>`, (m) => {
-      $("#leave-keep", m).addEventListener("click", () => { closeModal(); leave(); });
-      $("#leave-cancel", m).addEventListener("click", safe(async () => {
-        await api("POST", `/api/orders/${order.id}/discard`);
-        closeModal();
-        toast("Buyurtma bekor qilindi");
-        state.leaveHook = null;
-        location.hash = "#/tables";
-      }));
+// Tarozidagi tovar (kg, l, m) - miqdor so'raladi
+function qtyModal(p, current, onDone) {
+  openModal(`
+    <form id="qf" class="qty-form">
+      <div class="modal-head"><h2>${esc(p.name)}</h2><button type="button" class="icon-btn" data-close>✕</button></div>
+      <p class="muted">${money(p.price)} / ${UNITS[p.unit]} · omborda ${fmtQty(p.stock)} ${UNITS[p.unit]}</p>
+      <label><span>Miqdori (${UNITS[p.unit]})</span>
+        <input name="qty" type="number" step="0.001" min="0.001" inputmode="decimal" value="${ifNull(current, 1)}" required></label>
+      <div class="qty-sum" id="qsum"></div>
+      <div class="actions"><button type="button" class="btn" data-close>Bekor</button><button class="btn primary">Qo'shish</button></div>
+    </form>`, (m) => {
+    const input = $("input[name=qty]", m);
+    const sum = () => { $("#qsum", m).textContent = "Summa: " + money(p.price * (+input.value || 0)); };
+    input.select();
+    input.addEventListener("input", sum);
+    sum();
+    $("#qf", m).addEventListener("submit", (e) => {
+      e.preventDefault();
+      const q = Math.round(+input.value * 1000) / 1000;
+      if (!(q > 0)) return toast("Miqdorni kiriting", true);
+      closeModal();
+      onDone(q);
     });
   });
-
-  function renderProducts() {
-    const cats = [{ id: "all", name: "Hammasi" }, ...state.categories];
-    $("#cat-tabs").innerHTML = cats.map((c) =>
-      `<button class="btn small ${String(c.id) === String(activeCat) ? "active" : ""}" data-cat="${c.id}">${esc(c.name)}</button>`).join("");
-    $$("#cat-tabs [data-cat]").forEach((b) => b.addEventListener("click", () => {
-      activeCat = b.dataset.cat;
-      renderProducts();
-    }));
-
-    const list = state.products.filter((p) => activeCat === "all" || String(p.category_id) === String(activeCat));
-    const closed = order.status !== "open" || !can("tables");
-    $("#products").innerHTML = list.map((p) => `
-      <button class="product-card ${p.image ? "with-img" : ""}" data-id="${p.id}" ${closed ? "disabled" : ""}>
-        ${p.image ? `<img src="/uploads/${encodeURIComponent(p.image)}" alt="" loading="lazy">` : ""}
-        <span>${esc(p.name)}</span>
-        <span class="price">${money(p.price)}</span>
-      </button>`).join("") || `<p class="muted">Bu kategoriyada taom yo'q</p>`;
-    $$("#products .product-card").forEach((b) => b.addEventListener("click", safe(async () => {
-      order = await api("POST", `/api/orders/${order.id}/items`, { product_id: +b.dataset.id, qty: 1 });
-      renderCart();
-    })));
-  }
-
-  function renderCart() {
-    $("#order-title").innerHTML = title();
-    const open = order.status === "open";
-    const statusText = { paid: "✅ To'langan", cancelled: "❌ Bekor qilingan", refunded: "↩️ Pul qaytarilgan" }[order.status];
-    $("#cart").innerHTML = `
-      <h3>Buyurtma ${statusText ? `<span class="badge">${statusText}</span>` : ""}</h3>
-      <div class="muted">${esc(order.waiter_name || "")} · ${time(order.created_at)}</div>
-      <div class="cart-items">
-        ${order.items.map((i) => `
-          <div class="cart-item">
-            <div>${esc(i.name)}<div class="muted">${money(i.price)}</div></div>
-            <div class="qty">
-              ${open ? `<button data-item="${i.id}" data-qty="${i.qty - 1}">−</button>` : ""}
-              <b>${i.qty}</b>
-              ${open ? `<button data-item="${i.id}" data-qty="${i.qty + 1}">+</button>` : ""}
-            </div>
-            <div class="right"><b>${money(i.price * i.qty)}</b></div>
-          </div>`).join("") || `<p class="muted">Chap tomondan taom tanlang</p>`}
-      </div>
-      <div class="totals">
-        ${order.service || order.discount ? `<div><span>Summa</span><span>${money(order.subtotal)}</span></div>` : ""}
-        ${order.service_percent ? `<div class="service"><span>Xizmat haqi (${percent(order.service_percent)})</span><span>+${money(order.service)}</span></div>` : ""}
-        ${order.discount ? `<div><span>Chegirma</span><span>−${money(order.discount)}</span></div>` : ""}
-        <div class="grand"><span>Jami</span><span>${money(order.total)}</span></div>
-        ${order.payment_method ? `<div class="muted"><span>To'lov</span><span>${METHOD_NAMES[order.payment_method]}</span></div>` : ""}
-      </div>
-      <div class="cart-actions">
-        ${open && can("cashier") ? `<button class="btn primary big" id="pay-btn" ${order.items.length ? "" : "disabled"}>💰 To'lash</button>` : ""}
-        <div class="row">
-          <button class="btn" id="print-btn" ${order.items.length ? "" : "disabled"}>🖨️ Chek</button>
-          ${open && can("cashier") ? `<button class="btn danger" id="cancel-btn">Bekor qilish</button>` : ""}
-        </div>
-        ${open && can("tables") ? `
-        <div class="kitchen-actions">
-          <button class="btn kitchen" id="kitchen-print-btn" ${order.items.length ? "" : "disabled"}>
-            🖨️ Oshxona printeriga${order.pending_print ? ` <span class="count">${order.pending_print}</span>` : ""}
-          </button>
-          <button class="btn kitchen" id="kitchen-send-btn" ${order.pending_kds ? "" : "disabled"}>
-            🖥️ Oshxona kompyuteriga${order.pending_kds ? ` <span class="count">${order.pending_kds}</span>` : ""}
-          </button>
-        </div>` : ""}
-      </div>`;
-
-    $$("#cart [data-item]").forEach((b) => b.addEventListener("click", safe(async () => {
-      order = await api("PUT", `/api/orders/${order.id}/items/${b.dataset.item}`, { qty: +b.dataset.qty });
-      renderCart();
-    })));
-    $("#print-btn").addEventListener("click", () => printReceipt(order));
-    const payBtn = $("#pay-btn");
-    if (payBtn) payBtn.addEventListener("click", () => payModal(order, (paid) => {
-      order = paid;
-      renderCart();
-      renderProducts();
-    }));
-    const kitchenPrintBtn = $("#kitchen-print-btn");
-    if (kitchenPrintBtn) kitchenPrintBtn.addEventListener("click", safe(async () => {
-      kitchenPrintBtn.disabled = true;
-      try {
-        order = await api("POST", `/api/orders/${order.id}/kitchen-print`);
-      } finally {
-        renderCart();
-      }
-      // Printer ishlamasa - buyurtmada qolamiz, qayta urinish mumkin
-      if (order.errors.length) {
-        toast((order.printed.length ? "Chiqarildi: " + order.printed.join(", ") + ". " : "") + order.errors.join("; "), true);
-        return;
-      }
-      if (order.printed.length) toast("Chiqarildi: " + order.printed.join(", ") + " ✅");
-      location.hash = "#/tables";
-    }));
-    const kitchenSendBtn = $("#kitchen-send-btn");
-    if (kitchenSendBtn) kitchenSendBtn.addEventListener("click", safe(async () => {
-      kitchenSendBtn.disabled = true;
-      try {
-        order = await api("POST", `/api/orders/${order.id}/kitchen-send`);
-        toast("Oshxona ekraniga yuborildi ✅");
-      } finally {
-        renderCart();
-      }
-    }));
-    const cancelBtn = $("#cancel-btn");
-    if (cancelBtn) cancelBtn.addEventListener("click", safe(async () => {
-      if (!confirm("Buyurtmani bekor qilasizmi?")) return;
-      await api("POST", `/api/orders/${order.id}/cancel`);
-      toast("Buyurtma bekor qilindi");
-      location.hash = "#/tables";
-    }));
-  }
-
-  renderProducts();
-  renderCart();
 }
 
-function payModal(order, onPaid) {
-  let method = "cash";
+async function viewPOS() {
+  await loadMenu();
+  let cart = loadCart().filter((l) => state.products.some((p) => p.id === l.id));
+  let discount = 0;
   let customer = null;
+  let category = "";
+  const view = layout(`
+    <div class="pos">
+      <section class="pos-left">
+        <form class="pos-search" id="pos-search" autocomplete="off">
+          ${icon("barcode")}<input id="scan" placeholder="Shtrix-kodni skanerlang yoki tovar nomini yozing" autocomplete="off">
+        </form>
+        <div class="chips" id="cats"></div>
+        <div class="pos-grid" id="grid"></div>
+      </section>
+      <aside class="pos-cart panel">
+        <div class="cart-head"><h3>Savat</h3><button class="btn small" id="clear">Tozalash</button></div>
+        <div class="cart-lines" id="lines"></div>
+        <div class="cart-foot">
+          <div class="cart-customer" id="cust"></div>
+          <div class="cart-row"><span>Tovarlar</span><b id="sub"></b></div>
+          <label class="cart-row"><span>Chegirma</span><input id="disc" type="number" min="0" inputmode="numeric" placeholder="0"></label>
+          <div class="cart-row grand"><span>Jami</span><b id="total"></b></div>
+          <button class="btn primary big" id="pay">💰 To'lash <small>F2</small></button>
+        </div>
+      </aside>
+      <button type="button" class="cart-fab" id="cart-fab"></button>
+    </div>`);
+  const scan = $("#scan", view);
+  const subtotal = () => cart.reduce((s, l) => s + Math.round(l.price * l.qty), 0);
+  const productById = (id) => state.products.find((p) => p.id === id);
+
+  const add = (p, qty) => {
+    const line = cart.find((l) => l.id === p.id);
+    const inCart = line ? line.qty : 0;
+    if (state.settings.allow_negative !== "1" && inCart + qty > p.stock + 1e-9) {
+      toast(`Omborda yetarli emas: ${p.name} — qoldiq ${fmtQty(p.stock)} ${UNITS[p.unit]}`, true);
+      return;
+    }
+    if (line) line.qty = Math.round((line.qty + qty) * 1000) / 1000;
+    else cart.unshift({ id: p.id, name: p.name, price: p.price, unit: p.unit, qty });
+    renderCart(p.id);
+  };
+  const pick = (p) => {
+    if (isWeight(p)) qtyModal(p, 1, (q) => add(p, q));
+    else add(p, 1);
+  };
+
+  const renderCats = () => {
+    $("#cats", view).innerHTML = [["", "Hammasi"]].concat(state.categories.map((c) => [String(c.id), c.name]))
+      .map(([id, name]) => `<button type="button" class="chip ${id === category ? "active" : ""}" data-cat="${id}">${esc(name)}</button>`).join("");
+    $$("[data-cat]", view).forEach((b) => b.addEventListener("click", () => { category = b.dataset.cat; renderCats(); renderGrid(); }));
+  };
+  const renderGrid = () => {
+    const q = scan.value.trim().toLowerCase();
+    const list = state.products.filter((p) => (!category || String(p.category_id) === category)
+      && (!q || p.name.toLowerCase().indexOf(q) >= 0 || (p.barcode || "").indexOf(q) === 0));
+    $("#grid", view).innerHTML = list.slice(0, 200).map((p) => `
+      <button type="button" class="pos-card ${p.stock <= 0 ? "empty" : ""}" data-id="${p.id}">
+        ${p.image ? `<img src="/uploads/${encodeURIComponent(p.image)}" alt="">` : ""}
+        <b>${esc(p.name)}</b>
+        <span class="price">${money(p.price)}${isWeight(p) ? `<small>/${UNITS[p.unit]}</small>` : ""}</span>
+        <span class="stock ${p.stock <= 0 ? "out" : p.stock <= p.min_stock ? "low" : ""}">${fmtQty(p.stock)} ${UNITS[p.unit]}</span>
+      </button>`).join("") || `<p class="muted">Tovar topilmadi</p>`;
+    $$("#grid [data-id]", view).forEach((b) => b.addEventListener("click", () => pick(productById(+b.dataset.id))));
+  };
+  const renderCart = (flashId) => {
+    saveCart(cart);
+    $("#lines", view).innerHTML = cart.map((l, i) => `
+      <div class="cart-line ${l.id === flashId ? "flash" : ""}">
+        <div class="cl-name"><b>${esc(l.name)}</b><small class="muted">${money(l.price)}${isWeight(l) ? " / " + UNITS[l.unit] : ""}</small></div>
+        <div class="qty">
+          <button type="button" data-minus="${i}">−</button>
+          <input data-qty="${i}" value="${fmtQty(l.qty)}" inputmode="decimal">
+          <button type="button" data-plus="${i}">+</button>
+        </div>
+        <b class="cl-sum">${money(l.price * l.qty)}</b>
+        <button type="button" class="icon-btn" data-rm="${i}" title="Olib tashlash">✕</button>
+      </div>`).join("") || `<div class="cart-empty">${icon("barcode")}<p>Tovarni skanerlang yoki chapdan tanlang</p></div>`;
+    const sub = subtotal();
+    discount = Math.min(+$("#disc", view).value || 0, sub);
+    $("#sub", view).textContent = money(sub);
+    $("#total", view).textContent = money(sub - discount);
+    $("#pay", view).disabled = !cart.length;
+    const fab = $("#cart-fab", view);
+    fab.innerHTML = `🛒 Savat · ${cart.length} ta · <b>${money(sub - discount)}</b>`;
+    fab.classList.toggle("hidden", !cart.length);
+    const setQty = (i, q) => {
+      const l = cart[i];
+      const p = productById(l.id);
+      if (!(q > 0)) { cart.splice(i, 1); return renderCart(); }
+      q = isWeight(l) ? Math.round(q * 1000) / 1000 : Math.round(q);
+      if (p && state.settings.allow_negative !== "1" && q > p.stock + 1e-9) {
+        toast(`Omborda yetarli emas — qoldiq ${fmtQty(p.stock)} ${UNITS[p.unit]}`, true);
+        q = Math.max(Math.floor(p.stock * 1000) / 1000, 0);
+        if (!q) { cart.splice(i, 1); return renderCart(); }
+      }
+      l.qty = q;
+      renderCart();
+    };
+    $$("[data-minus]", view).forEach((b) => b.addEventListener("click", () => setQty(+b.dataset.minus, cart[+b.dataset.minus].qty - 1)));
+    $$("[data-plus]", view).forEach((b) => b.addEventListener("click", () => setQty(+b.dataset.plus, cart[+b.dataset.plus].qty + 1)));
+    $$("[data-rm]", view).forEach((b) => b.addEventListener("click", () => { cart.splice(+b.dataset.rm, 1); renderCart(); }));
+    $$("[data-qty]", view).forEach((inp) => inp.addEventListener("change", () => setQty(+inp.dataset.qty, +inp.value.replace(",", "."))));
+  };
+  const renderCustomer = () => {
+    $("#cust", view).innerHTML = customer
+      ? `<span>${icon("crm")} <b>${esc(customer.name)}</b> ${customer.telegram_chat_id ? `<span class="tg-mark">${icon("telegram")}</span>` : ""}</span>
+         <button type="button" class="icon-btn" id="cust-x">✕</button>`
+      : `<button type="button" class="btn small" id="cust-pick">${icon("crm")} Mijoz tanlash</button>`;
+    const x = $("#cust-x", view);
+    if (x) x.addEventListener("click", () => { customer = null; renderCustomer(); });
+    const pickBtn = $("#cust-pick", view);
+    if (pickBtn) pickBtn.addEventListener("click", () => openModal(`
+      <div class="modal-head"><h2>Mijoz</h2><button type="button" class="icon-btn" data-close>✕</button></div>
+      <div id="picker"></div>`, (m) => customerPicker($("#picker", m), (c) => {
+      if (c) { customer = c; closeModal(); renderCustomer(); }
+    })));
+  };
+
+  const clearSale = () => {
+    cart = [];
+    customer = null;
+    $("#disc", view).value = "";
+    scan.value = "";
+    renderCart();
+    renderCustomer();
+    renderGrid();
+    scan.focus();
+  };
+  const pay = () => {
+    if (!cart.length) return;
+    posPayModal({ cart, discount, customer, total: subtotal() - discount }, async (sale, given) => {
+      clearSale();
+      await loadMenu();
+      renderGrid();
+      if (sale.print) printReceipt(Object.assign({}, sale, { given }));
+    }, (c) => { customer = c; renderCustomer(); });
+  };
+
+  // Skaner: kodni yozib Enter bosadi. Aniq shtrix-kod bo'lsa - savatga, aks holda nom bo'yicha qidiruv
+  $("#pos-search", view).addEventListener("submit", (e) => {
+    e.preventDefault();
+    const q = scan.value.trim();
+    if (!q) return;
+    const byCode = state.products.find((p) => p.barcode === q);
+    const byName = state.products.filter((p) => p.name.toLowerCase().indexOf(q.toLowerCase()) >= 0);
+    const p = byCode || (byName.length === 1 ? byName[0] : null);
+    if (p) {
+      pick(p);
+      scan.value = "";
+      renderGrid();
+    } else if (/^\d{6,}$/.test(q)) {
+      toast(`${q} shtrix-kodli tovar topilmadi`, true);
+      if (navigator.vibrate) navigator.vibrate(200);
+      scan.select();
+    }
+  });
+  scan.addEventListener("input", renderGrid);
+  $("#disc", view).addEventListener("input", () => renderCart());
+  $("#clear", view).addEventListener("click", () => { if (!cart.length || confirm("Savat tozalansinmi?")) clearSale(); });
+  $("#pay", view).addEventListener("click", pay);
+  $("#cart-fab", view).addEventListener("click", () => $(".pos-cart", view).scrollIntoView({ behavior: "smooth" }));
+
+  // Diqqat boshqa joyda bo'lsa ham skaner o'qigan raqamlar qidiruv maydoniga tushadi
+  const keys = (e) => {
+    if (!document.body.contains(scan)) return document.removeEventListener("keydown", keys);
+    if ($("#modal-root").innerHTML) return;
+    if (e.key === "F2") { e.preventDefault(); pay(); return; }
+    const t = e.target;
+    const typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT");
+    if (!typing && e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+      scan.focus();
+    }
+  };
+  document.addEventListener("keydown", keys);
+  state.leaveHook = () => document.removeEventListener("keydown", keys);
+
+  renderCats();
+  renderGrid();
+  renderCart();
+  renderCustomer();
+  scan.focus();
+}
+
+function posPayModal(sale, onPaid, onCustomer) {
+  let method = "cash";
+  let customer = sale.customer;
   openModal(`
-    <h2>To'lov · #${order.id}</h2>
-    <div class="pay-methods">
-      ${Object.entries(METHOD_NAMES).map(([k, v]) =>
-        `<button type="button" class="btn ${k === method ? "active" : ""}" data-method="${k}">${v}</button>`).join("")}
-    </div>
-    <label><span>Chegirma (so'm)</span><input id="discount" type="number" min="0" value="0"></label>
-    <div class="totals"><div class="grand"><span>To'lanadi</span><span id="to-pay"></span></div></div>
-    <span class="field-label" id="customer-label"></span>
-    <div id="customer-picker"></div>
-    <div class="muted small-note hidden" id="tg-note">📨 Chek mijozning Telegram'iga yuboriladi</div>
-    <div id="debt-box" class="hidden">
-      <label><span>To'lov muddati</span><input id="due-date" type="date" value="${dateAfter(7)}"></label>
-    </div>
-    <label id="cash-box"><span>Mijoz bergan pul</span><input id="given" type="number" min="0" placeholder="Qaytim hisoblash uchun"></label>
-    <div class="change" id="change"></div>
-    <label><input type="checkbox" id="print-after" checked style="width:auto"> To'lovdan so'ng chek chiqarish</label>
-    <div class="actions">
-      <button class="btn" data-close>Bekor</button>
-      <button class="btn primary" id="confirm-pay">Tasdiqlash</button>
+    <div class="pay-modal">
+      <div class="modal-head"><h2>To'lov</h2><button type="button" class="icon-btn" data-close>✕</button></div>
+      <div class="pay-total"><span>To'lanadi</span><b>${money(sale.total)}</b></div>
+      <div class="pay-methods">
+        ${Object.keys(METHOD_NAMES).map((k) =>
+          `<button type="button" class="btn ${k === method ? "active" : ""}" data-method="${k}">${METHOD_NAMES[k]}</button>`).join("")}
+      </div>
+      <label id="cash-box"><span>Mijoz bergan pul</span><input id="given" type="number" min="0" inputmode="numeric" placeholder="Qaytim hisoblash uchun"></label>
+      <div class="change" id="change"></div>
+      <span class="field-label" id="customer-label"></span>
+      <div id="customer-picker"></div>
+      <div class="muted small-note hidden" id="tg-note">📨 Chek mijozning Telegram'iga yuboriladi</div>
+      <div id="debt-box" class="hidden">
+        <label><span>To'lov muddati</span><input id="due-date" type="date" value="${dateAfter(7)}"></label>
+      </div>
+      <label class="check-line"><input type="checkbox" id="print-after" checked> Chek chiqarish</label>
+      <div class="actions">
+        <button class="btn" data-close>Bekor</button>
+        <button class="btn primary" id="confirm-pay">Tasdiqlash <small>Enter</small></button>
+      </div>
     </div>`, (modal) => {
-    const total = () => Math.max(order.subtotal + order.service - (+$("#discount", modal).value || 0), 0);
     const update = () => {
-      $("#to-pay", modal).textContent = money(total());
       $("#cash-box", modal).classList.toggle("hidden", method !== "cash");
       $("#debt-box", modal).classList.toggle("hidden", method !== "debt");
-      $("#customer-label", modal).innerHTML = method === "debt" ? "Mijoz <b>(qarzga yoziladi)</b>"
-        : "Mijoz <i>(ixtiyoriy — tanlansa savdo mijozga yoziladi)</i>";
+      $("#customer-label", modal).innerHTML = method === "debt" ? "Mijoz <b>(nasiyaga yoziladi)</b>" : "Mijoz <i>(ixtiyoriy)</i>";
       $("#tg-note", modal).classList.toggle("hidden", !(customer && customer.telegram_chat_id));
       const given = +$("#given", modal).value || 0;
       $("#change", modal).textContent = method === "cash" && given
-        ? (given >= total() ? "Qaytim: " + money(given - total()) : "Yetmaydi: " + money(total() - given))
-        : "";
+        ? (given >= sale.total ? "Qaytim: " + money(given - sale.total) : "Yetmaydi: " + money(sale.total - given)) : "";
     };
     $$("[data-method]", modal).forEach((b) => b.addEventListener("click", () => {
       method = b.dataset.method;
       $$("[data-method]", modal).forEach((x) => x.classList.toggle("active", x === b));
       update();
     }));
-    $("#discount", modal).addEventListener("input", update);
     $("#given", modal).addEventListener("input", update);
-    customerPicker($("#customer-picker", modal), (c) => { customer = c; update(); });
-    $("#confirm-pay", modal).addEventListener("click", safe(async () => {
-      const body = { method, discount: +$("#discount", modal).value || 0 };
-      if (method === "debt" && !customer) throw new Error("Qarzga yozish uchun mijozni tanlang");
+    customerPicker($("#customer-picker", modal), (c) => { customer = c; onCustomer(c); update(); }, customer);
+    const confirmBtn = $("#confirm-pay", modal);
+    confirmBtn.addEventListener("click", safe(async (e) => {
+      if (method === "debt" && !customer) throw new Error("Nasiyaga yozish uchun mijozni tanlang");
+      const given = +$("#given", modal).value || 0;
+      if (method === "cash" && given && given < sale.total) throw new Error("Berilgan pul yetmaydi");
+      const body = { method, discount: sale.discount, items: sale.cart.map((l) => ({ product_id: l.id, qty: l.qty })) };
       if (customer) body.customer_id = customer.id;
       if (method === "debt") body.due_date = $("#due-date", modal).value;
-      const paid = await api("POST", `/api/orders/${order.id}/pay`, body);
-      const shouldPrint = $("#print-after", modal).checked;
+      const paid = await api("POST", "/api/sales", body);
+      paid.print = $("#print-after", modal).checked;
       closeModal();
-      toast(paid.customer_notified ? "To'lov qabul qilindi ✅ Chek mijozga Telegram'da yuborildi" : "To'lov qabul qilindi ✅");
-      onPaid(paid);
-      if (shouldPrint) printReceipt(paid);
+      toast(`Sotildi ✅ ${method === "cash" && given > paid.total ? "Qaytim: " + money(given - paid.total) : ""}`
+        + (paid.customer_notified ? " · chek Telegram'ga yuborildi" : ""));
+      onPaid(paid, method === "cash" ? given : 0);
     }));
+    modal.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && e.target.tagName !== "BUTTON" && !e.target.closest(".picker")) { e.preventDefault(); confirmBtn.click(); }
+    });
     update();
+    $("#given", modal).focus();
   });
 }
+
 
 // Chek ko'rinishi - Sozlamalar > Chek bo'limidagi belgilarga qarab
 function receiptHtml(order, cfg) {
@@ -862,35 +851,31 @@ function receiptHtml(order, cfg) {
   const row = (label, value, bold) => `<tr><td>${bold ? `<b>${label}</b>` : label}</td>
     <td style="text-align:right">${bold ? `<b>${value}</b>` : value}</td></tr>`;
   const lines = (text) => esc(text).split("\n").map((l) => `<div class="c">${l}</div>`).join("");
-  const info = [
-    cfg.show_order_number && `Chek #${order.id}`,
-    cfg.show_place && esc(place(order)),
-  ].filter(Boolean).join(" · ");
+  const info = cfg.show_order_number ? `Chek #${order.id}` : "";
   return `
     ${cfg.show_logo ? `<div class="c"><img class="r-logo" src="/img/logo.png" alt=""></div>` : ""}
-    ${cfg.show_cafe_name ? `<h3>${esc(state.settings.cafe_name)}</h3>` : ""}
+    ${cfg.show_shop_name ? `<h3>${esc(state.settings.shop_name)}</h3>` : ""}
     ${cfg.header_text ? lines(cfg.header_text) : ""}
     ${info ? `<div class="c">${info}</div>` : ""}
     ${cfg.show_date ? `<div class="c">${esc((order.closed_at || order.created_at || "").slice(0, 16))}</div>` : ""}
-    ${cfg.show_waiter && order.waiter_name ? `<div>Ofitsiant: ${esc(order.waiter_name)}</div>` : ""}
     ${cfg.show_cashier && order.cashier_name ? `<div>Kassir: ${esc(order.cashier_name)}</div>` : ""}
     ${cfg.show_customer && order.customer_name ? `<div>Mijoz: ${esc(order.customer_name)}</div>` : ""}
     <hr>
     <table>
       ${order.items.map((i) => cfg.show_item_price ? `
         <tr><td colspan="2">${esc(i.name)}</td></tr>
-        ${row(`${i.qty} x ${money(i.price)}`, money(i.qty * i.price))}`
-        : row(`${esc(i.name)} x${i.qty}`, money(i.qty * i.price))).join("")}
-      ${order.items.filter((i) => i.returned_qty).map((i) => `<tr><td colspan="2">  ${esc(i.name)}: ${i.returned_qty} ta qaytarildi</td></tr>`).join("")}
+        ${row(`${fmtQty(i.qty)} ${UNITS[i.unit] || ""} x ${money(i.price)}`, money(i.qty * i.price))}`
+        : row(`${esc(i.name)} x${fmtQty(i.qty)}`, money(i.qty * i.price))).join("")}
+      ${order.items.filter((i) => i.returned_qty).map((i) => `<tr><td colspan="2">  ${esc(i.name)}: ${fmtQty(i.returned_qty)} ${UNITS[i.unit] || ""} qaytarildi</td></tr>`).join("")}
     </table>
     <hr>
     <table>
-      ${(cfg.show_service && order.service) || (cfg.show_discount && order.discount) ? row("Summa", money(order.subtotal)) : ""}
-      ${cfg.show_service && order.service ? row(`Xizmat haqi ${percent(order.service_percent)}`, "+" + money(order.service)) : ""}
+      ${cfg.show_discount && order.discount ? row("Summa", money(order.subtotal)) : ""}
       ${cfg.show_discount && order.discount ? row("Chegirma", "-" + money(order.discount)) : ""}
       ${row("JAMI", money(order.total), true)}
       ${order.returned ? row("Qaytarildi", "-" + money(order.returned)) + row("YAKUNIY", money(order.total - order.returned), true) : ""}
       ${cfg.show_payment && order.payment_method ? row("To'lov", METHOD_NAMES[order.payment_method] || "") : ""}
+      ${cfg.show_change && order.given ? row("Berildi", money(order.given)) + row("Qaytim", money(order.given - order.total)) : ""}
     </table>
     <hr>
     ${order.status === "refunded" ? `<div class="c"><b>BEKOR QILINGAN CHEK</b></div>`
@@ -923,14 +908,15 @@ async function saleModal(id, onChange) {
   const s = await api("GET", `/api/sales/${id}`);
   const net = s.total - s.returned;
   const itemsHtml = (returnMode) => s.items.map((i) => {
-    const left = i.qty - i.returned_qty;
+    const left = Math.round((i.qty - i.returned_qty) * 1000) / 1000;
+    const u = UNITS[i.unit] || "";
     return `
       <tr class="${left === 0 ? "cancelled" : ""}">
-        <td>${esc(i.name)}${i.returned_qty ? `<small class="amount-out"> · ${i.returned_qty} ta qaytarilgan</small>` : ""}</td>
-        <td class="right nowrap">${i.qty} × ${money(i.price)}</td>
+        <td>${esc(i.name)}${i.returned_qty ? `<small class="amount-out"> · ${fmtQty(i.returned_qty)} ${u} qaytarilgan</small>` : ""}</td>
+        <td class="right nowrap">${fmtQty(i.qty)} ${u} × ${money(i.price)}</td>
         <td class="right nowrap">${money(i.qty * i.price)}</td>
         ${returnMode ? `<td class="right">${left ? `<input type="number" class="ret-qty" data-item="${i.id}" data-price="${i.price}"
-          min="0" max="${left}" value="0" style="width:70px">` : ""}</td>` : ""}
+          min="0" max="${left}" step="${FRACTION_UNITS.indexOf(i.unit) >= 0 ? "0.001" : "1"}" value="0" style="width:80px">` : ""}</td>` : ""}
       </tr>`;
   }).join("");
   const render = (returnMode) => `
@@ -939,17 +925,15 @@ async function saleModal(id, onChange) {
         <button type="button" class="icon-btn" data-close>✕</button></div>
       <div class="jd-meta">
         <div><small>Vaqti</small><b>${esc(s.closed_at || "")}</b></div>
-        <div><small>Joy</small><b>${esc(place(s))}</b><span class="muted">${esc(s.waiter_name || "")}</span></div>
-        <div><small>Kassir</small><b>${esc(s.cashier_name || "—")}</b>
-          ${s.customer_name ? `<span class="muted">Mijoz: ${esc(s.customer_name)}</span>` : ""}</div>
+        <div><small>Kassir</small><b>${esc(s.cashier_name || "—")}</b></div>
+        <div><small>Mijoz</small><b>${esc(s.customer_name || "—")}</b>${s.customer_phone ? `<span class="muted">${esc(formatPhone(s.customer_phone))}</span>` : ""}</div>
       </div>
       <table class="list sale-items">
-        <thead><tr><th>Taom</th><th class="right">Soni × narx</th><th class="right">Summa</th>${returnMode ? `<th class="right">Qaytarish</th>` : ""}</tr></thead>
+        <thead><tr><th>Tovar</th><th class="right">Miqdor × narx</th><th class="right">Summa</th>${returnMode ? `<th class="right">Qaytarish</th>` : ""}</tr></thead>
         <tbody>${itemsHtml(returnMode)}</tbody>
       </table>
       <div class="sale-totals">
-        ${s.service || s.discount ? `<div><span>Taomlar</span><b>${money(s.subtotal)}</b></div>` : ""}
-        ${s.service ? `<div><span>Xizmat haqi ${percent(s.service_percent)}</span><b>+${money(s.service)}</b></div>` : ""}
+        ${s.discount ? `<div><span>Tovarlar</span><b>${money(s.subtotal)}</b></div>` : ""}
         ${s.discount ? `<div><span>Chegirma</span><b>−${money(s.discount)}</b></div>` : ""}
         <div class="grand"><span>Jami</span><b>${money(s.total)}</b></div>
         ${s.returned ? `<div class="amount-out"><span>Qaytarilgan</span><b>−${money(s.returned)}</b></div>
@@ -957,12 +941,12 @@ async function saleModal(id, onChange) {
         <div><span>To'lov</span><b>${METHOD_NAMES[s.payment_method] || s.payment_method}${s.due_date ? ` · muddat ${esc(s.due_date)}` : ""}</b></div>
       </div>
       ${s.returns.length ? `<h3>Qaytarishlar</h3>${s.returns.map((r) => `
-        <div class="return-row"><div><b>${money(r.amount)}</b> · ${r.items.map((x) => `${esc(x.name)} × ${x.qty}`).join(", ")}
+        <div class="return-row"><div><b>${money(r.amount)}</b> · ${r.items.map((x) => `${esc(x.name)} × ${fmtQty(x.qty)}`).join(", ")}
           <small class="muted">${esc(r.created_at.slice(0, 16))} · ${esc(r.user_name || "")}${r.reason ? " · " + esc(r.reason) : ""}</small></div></div>`).join("")}` : ""}
       ${s.status === "refunded" ? `<div class="notice error-notice">Bekor qilingan: ${esc(s.refunded_at || "")} · ${esc(s.refunded_by_name || "")}
         ${s.refund_reason ? " · " + esc(s.refund_reason) : ""}</div>` : ""}
       ${returnMode ? `
-        <label><span>Qaytarish sababi</span><input id="ret-reason" placeholder="Masalan: taom sovuq edi"></label>
+        <label><span>Qaytarish sababi</span><input id="ret-reason" placeholder="Masalan: yaroqsiz chiqdi"></label>
         <div class="ret-preview" id="ret-preview"></div>
         <div class="actions"><button type="button" class="btn" id="ret-back">Orqaga</button>
           <button type="button" class="btn primary" id="ret-confirm">Qaytarishni tasdiqlash</button></div>` : `
@@ -982,7 +966,7 @@ async function saleModal(id, onChange) {
         const cancel = $("#sale-cancel", m);
         if (cancel) cancel.addEventListener("click", safe(async () => {
           const reason = prompt(`Chek #${s.id} to'liq bekor qilinadi — ${money(net)} ${s.payment_method === "debt"
-            ? "qarzdan olib tashlanadi" : "kassadan qaytariladi"}.\nChek o'chirilmaydi, tarixda qoladi.\n\nSababini yozing:`);
+            ? "nasiyadan olib tashlanadi" : "kassadan qaytariladi"}, tovarlar omborga qaytadi.\nChek o'chirilmaydi, tarixda qoladi.\n\nSababini yozing:`);
           if (reason === null) return;
           await api("POST", `/api/finance/sales/${s.id}/cancel`, { reason });
           toast("Chek bekor qilindi");
@@ -996,8 +980,8 @@ async function saleModal(id, onChange) {
         $$(".ret-qty", m).forEach((i) => { value += (+i.value || 0) * +i.dataset.price; });
         const approx = s.subtotal ? Math.round(value * s.total / s.subtotal) : 0;
         $("#ret-preview", m).innerHTML = value
-          ? `Qaytariladigan summa: <b>${money(Math.min(approx, net))}</b>${s.discount || s.service ? " <small class='muted'>(chegirma/xizmat haqi ulushi bilan)</small>" : ""}`
-          : `<span class="muted">Qaytariladigan taom sonini kiriting</span>`;
+          ? `Qaytariladigan summa: <b>${money(Math.min(approx, net))}</b>${s.discount ? " <small class='muted'>(chegirma ulushi bilan)</small>" : ""}`
+          : `<span class="muted">Qaytariladigan tovar miqdorini kiriting</span>`;
       };
       $$(".ret-qty", m).forEach((i) => i.addEventListener("input", preview));
       preview();
@@ -1005,7 +989,7 @@ async function saleModal(id, onChange) {
       $("#ret-confirm", m).addEventListener("click", safe(async () => {
         const items = $$(".ret-qty", m).filter((i) => +i.value > 0).map((i) => ({ item_id: +i.dataset.item, qty: +i.value }));
         const res = await api("POST", `/api/sales/${s.id}/return`, { items, reason: $("#ret-reason", m).value });
-        toast(`Qaytarildi: ${money(res.amount)} ✅`);
+        toast(`Qaytarildi: ${money(res.amount)} ✅ Tovar omborga qaytdi`);
         if (onChange) await onChange();
         saleModal(s.id, onChange);
       }));
@@ -1040,13 +1024,13 @@ async function viewSales() {
     </div>
     <div class="panel">
       ${d.sales.length ? `<div class="table-scroll"><table class="list sales-table">
-        <thead><tr><th>Chek</th><th>Vaqt</th><th>Joy</th><th>Mijoz</th><th>Kassir</th><th>To'lov</th>
+        <thead><tr><th>Chek</th><th>Vaqt</th><th class="right">Tovarlar</th><th>Mijoz</th><th>Kassir</th><th>To'lov</th>
           <th class="right">Summa</th><th>Holati</th></tr></thead>
         <tbody>${d.sales.map((s) => `
           <tr class="clickable ${s.status === "refunded" ? "cancelled" : ""}" data-id="${s.id}">
             <td><b>#${s.id}</b></td>
             <td class="nowrap">${esc(s.closed_at.slice(0, 16))}</td>
-            <td>${esc(place(s))}</td>
+            <td class="right">${s.items}</td>
             <td>${esc(s.customer_name || "")}</td>
             <td class="muted">${esc(s.cashier_name || "")}</td>
             <td>${METHOD_NAMES[s.payment_method] || ""}</td>
@@ -1169,8 +1153,17 @@ async function viewDashboard() {
       <div class="kpi-row">
         ${tile("cash", "Kunlik savdo", money(d.today.revenue), `${d.today.orders} ta chek`)}
         ${tile("reports", "Oylik savdo", money(d.month.revenue), `${d.month.orders} ta chek`)}
-        ${tile("check", "Bugungi cheklar soni", d.today.orders, "to'langan buyurtmalar")}
+        ${tile("check", "Bugungi cheklar soni", d.today.orders, "sotuvlar")}
         ${tile("sales", "O'rtacha chek", money(s.average), periodName.toLowerCase())}
+        ${tile("finance", "Foyda", money(s.profit), periodName.toLowerCase())}
+      </div>
+      <div class="kpi-row stock-kpis">
+        <a class="kpi" href="#/stock">${`<div class="kpi-head"><span class="kpi-icon">${icon("warehouse")}</span>Ombordagi tovar (tannarxda)</div>
+          <div class="kpi-value">${money(d.stock.value)}</div>`}</a>
+        <a class="kpi warn" href="#/stock?filter=low"><div class="kpi-head"><span class="kpi-icon">${icon("scale")}</span>Kam qolgan tovarlar</div>
+          <div class="kpi-value">${d.stock.low} ta</div></a>
+        <a class="kpi bad" href="#/stock?filter=out"><div class="kpi-head"><span class="kpi-icon">${icon("cancel")}</span>Tugagan tovarlar</div>
+          <div class="kpi-value">${d.stock.out} ta</div></a>
       </div>
       <div class="segmented">${PERIODS.map(([k, name]) =>
         `<button type="button" data-period="${k}" class="${k === period ? "active" : ""}">${name}</button>`).join("")}</div>
@@ -1199,10 +1192,10 @@ async function viewDashboard() {
         <section class="panel">
           <div class="panel-head"><div><span class="muted">Tranzaksiyalar</span>
             <div class="panel-total">${s.orders} ta</div></div></div>
-          ${[["box", "Sotilgan taomlar", s.items], ["check", "Sotuvlar (cheklar)", s.orders],
-             ["cancel", "Bekor qilinganlar", s.cancelled], ["clock", "Hozir ochiq buyurtmalar", s.open]]
+          ${[["box", "Sotilgan tovarlar (birlik)", fmtQty(s.items)], ["check", "Sotuvlar (cheklar)", s.orders + " ta"],
+             ["cancel", "Bekor qilingan cheklar", s.cancelled + " ta"], ["finance", "Tannarx", money(s.cost)]]
             .map(([ic, name, n]) => `
-              <div class="tx-row"><span class="method-icon">${icon(ic)}</span><span>${name}</span><b>${n} ta</b></div>`).join("")}
+              <div class="tx-row"><span class="method-icon">${icon(ic)}</span><span>${name}</span><b>${n}</b></div>`).join("")}
         </section>
       </div>`;
     $$("[data-period]", view).forEach((b) => b.addEventListener("click", () => {
@@ -1242,7 +1235,7 @@ function dueText(d) {
 }
 
 // Mijozni qidirib tanlash yoki shu yerning o'zida yangi mijoz yaratish
-function customerPicker(root, onSelect) {
+function customerPicker(root, onSelect, initial) {
   root.innerHTML = `
     <div class="picker">
       <div class="picker-search">${icon("search")}<input placeholder="Ism yoki telefon bo'yicha qidirish" autocomplete="off"></div>
@@ -1299,6 +1292,7 @@ function customerPicker(root, onSelect) {
     toast("Mijoz qo'shildi");
     choose(c);
   }));
+  if (initial) choose(initial);
 }
 
 function customerForm(c, onSaved) {
@@ -1787,7 +1781,7 @@ function bindCancel(root, onDone) {
       ? `${money(+b.dataset.amount)} kassadan chiqadi`
       : `${money(+b.dataset.amount)} kassaga qaytadi`;
     const reason = prompt(
-      (sale ? `Buyurtma #${b.dataset.cancel} savdosi bekor qilinadi (pul qaytarildi).\n` : "Tranzaksiya bekor qilinadi.\n") +
+      (sale ? `Chek #${b.dataset.cancel} bekor qilinadi (pul qaytariladi, tovar omborga qaytadi).\n` : "Tranzaksiya bekor qilinadi.\n") +
       `${effect}. Yozuv o'chirilmaydi, tarixda qoladi.\n\nSababini yozing:`);
     if (reason === null) return;
     const url = sale ? `/api/finance/sales/${b.dataset.cancel}/cancel`
@@ -1928,11 +1922,10 @@ async function viewReports() {
     </div>
     <div class="stats">
       <div class="stat"><div class="label">Tushum</div><div class="value">${money(r.summary.revenue)}</div></div>
-      <div class="stat"><div class="label">Buyurtmalar</div><div class="value">${r.summary.orders}</div></div>
+      <div class="stat"><div class="label">Cheklar</div><div class="value">${r.summary.orders}</div></div>
       <div class="stat"><div class="label">O'rtacha chek</div><div class="value">${money(r.summary.average)}</div></div>
       <div class="stat"><div class="label">Tannarx</div><div class="value">${money(r.summary.cost)}</div></div>
       <div class="stat"><div class="label">Foyda</div><div class="value profit">${money(r.summary.profit)}</div></div>
-      <div class="stat"><div class="label">Xizmat haqi</div><div class="value">${money(r.summary.service)}</div></div>
       <div class="stat"><div class="label">Chegirmalar</div><div class="value">${money(r.summary.discount)}</div></div>
     </div>
     <div class="report-grid">
@@ -1942,85 +1935,455 @@ async function viewReports() {
             || `<tr><td class="muted">Ma'lumot yo'q</td></tr>`}
         </table>
       </div>
-      <div class="panel"><h3>Ko'p sotilgan taomlar</h3>
+      <div class="panel"><h3>Ko'p sotilgan tovarlar</h3>
         <table class="list">
-          ${r.top_products.map((p) => `<tr><td>${esc(p.name)}</td><td>${p.qty} ta</td><td class="right">${money(p.revenue)}</td>
+          ${r.top_products.map((p) => `<tr><td>${esc(p.name)}</td><td class="nowrap">${fmtQty(p.qty)} ${UNITS[p.unit] || ""}</td><td class="right">${money(p.revenue)}</td>
             <td class="right muted" title="Foyda">+${money(p.profit)}</td></tr>`).join("")
             || `<tr><td class="muted">Ma'lumot yo'q</td></tr>`}
         </table>
       </div>
-      <div class="panel"><h3>Ofitsiantlar</h3>
+      <div class="panel"><h3>Kassirlar</h3>
         <table class="list">
-          ${r.by_waiter.map((w) => `<tr><td>${esc(w.name)}</td><td>${w.orders} ta</td><td class="right">${money(w.revenue)}</td></tr>`).join("")
+          ${r.by_cashier.map((w) => `<tr><td>${esc(w.name)}</td><td>${w.orders} ta</td><td class="right">${money(w.revenue)}</td></tr>`).join("")
             || `<tr><td class="muted">Ma'lumot yo'q</td></tr>`}
         </table>
       </div>
     </div>
-    <div class="panel"><h3>Yopilgan buyurtmalar</h3>
-      <table class="list">
-        <thead><tr><th>#</th><th>Vaqt</th><th>Joy</th><th>Ofitsiant</th><th>To'lov</th><th class="right">Summa</th></tr></thead>
-        <tbody>
-          ${r.orders.map((o) => `
-            <tr class="clickable" data-id="${o.id}">
-              <td>${o.id}</td><td>${esc(o.closed_at)}</td><td>${esc(place(o))}</td>
-              <td>${esc(o.waiter_name || "-")}</td>
-              <td>${METHOD_NAMES[o.payment_method] || ""}</td><td class="right">${money(o.total)}</td>
-            </tr>`).join("") || `<tr><td colspan="6" class="muted">Bu davrda buyurtma yo'q</td></tr>`}
-        </tbody>
-      </table>
-    </div>`);
+    <p class="muted">Har bir chekni ko'rish: <a href="#/reports/sales?from=${from}&to=${to}">Savdolar →</a></p>`);
 
   $("#apply").addEventListener("click", () => go(`#/reports?from=${$("#from").value}&to=${$("#to").value}`));
   $("#today").addEventListener("click", () => go("#/reports"));
-  $$("tr[data-id]", view).forEach((tr) =>
-    tr.addEventListener("click", () => (location.hash = "#/order/" + tr.dataset.id)));
 }
 
-// ------------------------------------------------------------ menyu (admin)
+// ------------------------------------------------------------ ombor
 
-async function viewMenu() {
+const MOVE_NAMES = { initial: "Boshlang'ich qoldiq", sale: "Sotuv", return: "Qaytarish", cancel: "Chek bekor qilindi",
+  purchase: "Kirim", purchase_cancel: "Kirim bekor qilindi", count: "Inventarizatsiya", writeoff: "Hisobdan chiqarish" };
+
+function stockBadge(p) {
+  const cls = p.stock <= 0 ? "out" : p.stock <= p.min_stock ? "low" : "";
+  return `<span class="stock-badge ${cls}">${fmtQty(p.stock)} ${UNITS[p.unit] || ""}</span>`;
+}
+
+function signedQty(q, unit) {
+  return `<span class="${q < 0 ? "amount-out" : "amount-in"}">${q > 0 ? "+" : ""}${fmtQty(q)} ${UNITS[unit] || ""}</span>`;
+}
+
+// Tovar qidirish: nom yoki shtrix-kod (skaner Enter bosadi) -> onPick(tovar)
+function productSearch(root, onPick, placeholder) {
+  root.innerHTML = `
+    <form class="picker-search product-search" autocomplete="off">${icon("barcode")}
+      <input placeholder="${esc(placeholder || "Shtrix-kod yoki tovar nomi")}"></form>
+    <div class="picker-results"></div>`;
+  const input = $("input", root);
+  const results = $(".picker-results", root);
+  const choose = (p) => { onPick(p); input.value = ""; results.innerHTML = ""; input.focus(); };
+  const find = () => {
+    const q = input.value.trim().toLowerCase();
+    if (!q) return [];
+    return state.products.filter((p) => p.barcode === q || p.name.toLowerCase().indexOf(q) >= 0).slice(0, 8);
+  };
+  input.addEventListener("input", () => {
+    const list = find();
+    results.innerHTML = list.map((p) => `<button type="button" data-id="${p.id}"><b>${esc(p.name)}</b>
+      <span>${esc(p.barcode || "")}</span><em>${fmtQty(p.stock)} ${UNITS[p.unit]}</em></button>`).join("")
+      || (input.value.trim() ? `<p class="muted">Topilmadi</p>` : "");
+    $$("[data-id]", results).forEach((b) => b.addEventListener("click", () => choose(state.products.find((p) => p.id === +b.dataset.id))));
+  });
+  $("form", root).addEventListener("submit", (e) => {
+    e.preventDefault();
+    const q = input.value.trim();
+    const exact = state.products.find((p) => p.barcode === q);
+    const list = find();
+    if (exact || list.length === 1) choose(exact || list[0]);
+    else if (q) toast(list.length ? "Ro'yxatdan tanlang" : `"${q}" topilmadi`, !list.length);
+  });
+  return input;
+}
+
+async function productMovesModal(p) {
+  const d = await api("GET", `/api/stock/moves?product_id=${p.id}`);
+  openModal(`
+    <div class="moves-modal">
+      <div class="modal-head"><h2>${esc(p.name)}</h2><button type="button" class="icon-btn" data-close>✕</button></div>
+      <p>Qoldiq: ${stockBadge(p)} · tannarx ${money(p.cost)} · narx ${money(p.price)}</p>
+      <div class="table-scroll"><table class="list">
+        <thead><tr><th>Vaqt</th><th>Harakat</th><th class="right">Miqdor</th><th class="right">Qoldiq</th><th>Xodim</th></tr></thead>
+        <tbody>${d.items.map((m) => `<tr><td class="nowrap">${esc(m.created_at.slice(0, 16))}</td>
+          <td>${MOVE_NAMES[m.kind] || m.kind}${m.ref_id && (m.kind === "sale" || m.kind === "return" || m.kind === "cancel") ? ` #${m.ref_id}` : ""}
+            ${m.comment ? `<small class="muted"> · ${esc(m.comment)}</small>` : ""}</td>
+          <td class="right nowrap">${signedQty(m.qty, p.unit)}</td><td class="right">${fmtQty(ifNull(m.balance, 0))}</td>
+          <td class="muted">${esc(m.user_name || "")}</td></tr>`).join("") || `<tr><td colspan="5" class="muted">Harakat yo'q</td></tr>`}</tbody>
+      </table></div>
+      <div class="actions"><button class="btn primary" data-close>Yopish</button></div>
+    </div>`);
+}
+
+async function viewStock() {
+  const params = new URLSearchParams(location.hash.split("?")[1] || "");
+  const q = new URLSearchParams();
+  ["q", "category_id", "filter"].forEach((k) => { if (params.get(k)) q.set(k, params.get(k)); });
+  const [d] = await Promise.all([api("GET", "/api/stock?" + q.toString()), loadMenu()]);
+  const t = d.totals;
+  const view = layout(`
+    <div class="toolbar"><h2>Qoldiqlar</h2>
+      ${can("warehouse") ? `<a class="btn primary" href="#/purchases/new">${icon("in")} Kirim qilish</a>` : ""}</div>
+    <div class="kpi-row stock-kpis">
+      <div class="kpi"><div class="kpi-head"><span class="kpi-icon">${icon("box")}</span>Tovarlar</div><div class="kpi-value">${t.products}</div></div>
+      <div class="kpi"><div class="kpi-head"><span class="kpi-icon">${icon("finance")}</span>Qoldiq (tannarxda)</div><div class="kpi-value">${money(t.cost_value)}</div></div>
+      <div class="kpi"><div class="kpi-head"><span class="kpi-icon">${icon("sales")}</span>Qoldiq (sotish narxida)</div><div class="kpi-value">${money(t.price_value)}</div></div>
+      <a class="kpi warn" href="#/stock?filter=low"><div class="kpi-head"><span class="kpi-icon">${icon("scale")}</span>Kam qolgan</div><div class="kpi-value">${t.low}</div></a>
+      <a class="kpi bad" href="#/stock?filter=out"><div class="kpi-head"><span class="kpi-icon">${icon("cancel")}</span>Tugagan</div><div class="kpi-value">${t.out}</div></a>
+    </div>
+    <form class="filters" id="filters">
+      <input type="search" name="q" placeholder="Nomi yoki shtrix-kod" value="${esc(params.get("q") || "")}" style="width:240px">
+      <select name="category_id" style="width:auto"><option value="">Barcha kategoriyalar</option>
+        ${state.categories.map((c) => `<option value="${c.id}" ${String(c.id) === params.get("category_id") ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select>
+      <select name="filter" style="width:auto">
+        ${[["", "Hammasi"], ["low", "Kam qolgan"], ["out", "Tugagan"]].map(([k, v]) => `<option value="${k}" ${k === (params.get("filter") || "") ? "selected" : ""}>${v}</option>`).join("")}</select>
+      <button class="btn primary">Ko'rsatish</button>
+    </form>
+    <div class="panel"><div class="table-scroll"><table class="list clickable-rows">
+      <thead><tr><th>Nomi</th><th>Shtrix-kod</th><th>Kategoriya</th><th class="right">Qoldiq</th><th class="right">Minimum</th>
+        <th class="right">Tannarx</th><th class="right">Narx</th><th class="right">Qiymati</th></tr></thead>
+      <tbody>${d.items.map((p) => `<tr class="clickable" data-id="${p.id}">
+        <td><b>${esc(p.name)}</b></td><td class="muted">${esc(p.barcode || "—")}</td><td>${esc(p.category_name || "—")}</td>
+        <td class="right">${stockBadge(p)}</td><td class="right muted">${p.min_stock ? fmtQty(p.min_stock) : "—"}</td>
+        <td class="right muted">${money(p.cost)}</td><td class="right">${money(p.price)}</td>
+        <td class="right">${money(Math.max(p.stock, 0) * p.cost)}</td></tr>`).join("") || `<tr><td colspan="8" class="muted">Tovar topilmadi</td></tr>`}
+      </tbody></table></div></div>`);
+  $("#filters", view).addEventListener("submit", (e) => {
+    e.preventDefault();
+    const f = new URLSearchParams();
+    new FormData(e.target).forEach((v, k) => { if (v) f.set(k, v); });
+    go("#/stock?" + f.toString());
+  });
+  $$("tr[data-id]", view).forEach((tr) => tr.addEventListener("click", () =>
+    productMovesModal(d.items.find((p) => p.id === +tr.dataset.id)).catch((e) => toast(e.message, true))));
+}
+
+async function viewMoves() {
+  const params = new URLSearchParams(location.hash.split("?")[1] || "");
+  const q = new URLSearchParams();
+  ["from", "to", "kind"].forEach((k) => { if (params.get(k)) q.set(k, params.get(k)); });
+  if (!params.get("from")) q.set("from", today());
+  const d = await api("GET", "/api/stock/moves?" + q.toString());
+  const view = layout(`
+    <div class="toolbar"><h2>Ombor harakatlari</h2></div>
+    <form class="filters" id="filters">
+      <input type="date" name="from" value="${esc(q.get("from"))}" style="width:auto">
+      <input type="date" name="to" value="${esc(params.get("to") || "")}" style="width:auto">
+      <select name="kind" style="width:auto"><option value="">Barcha harakatlar</option>
+        ${Object.keys(MOVE_NAMES).map((k) => `<option value="${k}" ${k === params.get("kind") ? "selected" : ""}>${MOVE_NAMES[k]}</option>`).join("")}</select>
+      <button class="btn primary">Ko'rsatish</button>
+    </form>
+    <div class="panel"><div class="table-scroll"><table class="list">
+      <thead><tr><th>Vaqt</th><th>Tovar</th><th>Harakat</th><th class="right">Miqdor</th><th class="right">Qoldiq</th><th>Xodim</th></tr></thead>
+      <tbody>${d.items.map((m) => `<tr><td class="nowrap">${esc(m.created_at.slice(0, 16))}</td><td>${esc(m.product_name)}</td>
+        <td>${MOVE_NAMES[m.kind] || m.kind}${m.ref_id ? ` <span class="muted">#${m.ref_id}</span>` : ""}${m.comment ? `<small class="muted"> · ${esc(m.comment)}</small>` : ""}</td>
+        <td class="right nowrap">${signedQty(m.qty, m.unit)}</td><td class="right">${fmtQty(ifNull(m.balance, 0))}</td>
+        <td class="muted">${esc(m.user_name || "")}</td></tr>`).join("") || `<tr><td colspan="6" class="muted">Harakat yo'q</td></tr>`}</tbody>
+    </table></div></div>`);
+  $("#filters", view).addEventListener("submit", (e) => {
+    e.preventDefault();
+    const f = new URLSearchParams();
+    new FormData(e.target).forEach((v, k) => { if (v) f.set(k, v); });
+    go("#/stock/moves?" + f.toString());
+  });
+}
+
+// --- kirim (ta'minotchidan tovar qabul qilish)
+
+async function purchaseModal(id, onChange) {
+  const p = await api("GET", `/api/purchases/${id}`);
+  openModal(`
+    <div class="sale-receipt">
+      <div class="modal-head"><h2>Kirim #${p.id} ${p.status === "done" ? `<span class="badge ok">Qabul qilingan</span>` : `<span class="badge off">Bekor qilingan</span>`}</h2>
+        <button type="button" class="icon-btn" data-close>✕</button></div>
+      <div class="jd-meta">
+        <div><small>Vaqti</small><b>${esc(p.created_at.slice(0, 16))}</b></div>
+        <div><small>Ta'minotchi</small><b>${esc(p.supplier_name || "Ta'minotchisiz")}</b></div>
+        <div><small>Qabul qildi</small><b>${esc(p.user_name || "")}</b></div>
+      </div>
+      <table class="list"><thead><tr><th>Tovar</th><th class="right">Miqdor</th><th class="right">Tannarx</th><th class="right">Summa</th></tr></thead>
+        <tbody>${p.items.map((i) => `<tr><td>${esc(i.name)}${i.price ? `<small class="muted"> · yangi narx ${money(i.price)}</small>` : ""}</td>
+          <td class="right">${fmtQty(i.qty)} ${UNITS[i.unit] || ""}</td><td class="right">${money(i.cost)}</td>
+          <td class="right">${money(Math.round(i.cost * i.qty))}</td></tr>`).join("")}</tbody></table>
+      <div class="sale-totals">
+        <div class="grand"><span>Jami</span><b>${money(p.total)}</b></div>
+        <div><span>To'langan</span><b>${money(p.paid)}</b></div>
+        ${p.supplier_id ? `<div><span>Ta'minotchiga qarz</span><b>${money(p.total - p.paid)}</b></div>` : ""}
+      </div>
+      ${p.comment ? `<p class="muted">${esc(p.comment)}</p>` : ""}
+      ${p.status === "cancelled" ? `<div class="notice error-notice">Bekor qilingan: ${esc(p.cancelled_at || "")} · ${esc(p.cancelled_by_name || "")}${p.cancel_reason ? " · " + esc(p.cancel_reason) : ""}</div>` : ""}
+      <div class="actions">
+        ${p.status === "done" ? `<button type="button" class="btn danger-text" id="p-cancel">Bekor qilish</button>` : ""}
+        <button type="button" class="btn primary" data-close>Yopish</button>
+      </div>
+    </div>`, (m) => {
+    const c = $("#p-cancel", m);
+    if (c) c.addEventListener("click", safe(async () => {
+      const reason = prompt(`Kirim #${p.id} bekor qilinadi: tovarlar ombordan ayiriladi${p.paid ? ", to'langan pul kassaga qaytadi" : ""}.\\nSababini yozing:`);
+      if (reason === null) return;
+      await api("POST", `/api/purchases/${p.id}/cancel`, { reason });
+      toast("Kirim bekor qilindi");
+      if (onChange) await onChange();
+      purchaseModal(p.id, onChange);
+    }));
+  });
+}
+
+async function viewPurchases() {
+  const params = new URLSearchParams(location.hash.split("?")[1] || "");
+  const q = new URLSearchParams();
+  ["from", "to"].forEach((k) => { if (params.get(k)) q.set(k, params.get(k)); });
+  const d = await api("GET", "/api/purchases?" + q.toString());
+  const view = layout(`
+    <div class="toolbar"><h2>Kirimlar</h2><a class="btn primary" href="#/purchases/new">${icon("plus")} Yangi kirim</a></div>
+    <form class="filters" id="filters">
+      <input type="date" name="from" value="${d.from}" style="width:auto">
+      <input type="date" name="to" value="${d.to}" style="width:auto">
+      <button class="btn primary">Ko'rsatish</button>
+    </form>
+    <div class="finance-totals">
+      <div><span class="muted">Kirim summasi</span><b>${money(d.total)}</b></div>
+      <div><span class="muted">To'langan</span><b>${money(d.paid)}</b></div>
+      <div><span class="muted">Qarzga olingan</span><b class="amount-out">${money(d.total - d.paid)}</b></div>
+    </div>
+    <div class="panel"><div class="table-scroll"><table class="list">
+      <thead><tr><th>#</th><th>Vaqt</th><th>Ta'minotchi</th><th class="right">Tovarlar</th><th class="right">Summa</th>
+        <th class="right">To'langan</th><th>Xodim</th><th>Holati</th></tr></thead>
+      <tbody>${d.items.map((p) => `<tr class="clickable ${p.status === "cancelled" ? "cancelled" : ""}" data-id="${p.id}">
+        <td><b>#${p.id}</b></td><td class="nowrap">${esc(p.created_at.slice(0, 16))}</td><td>${esc(p.supplier_name || "—")}</td>
+        <td class="right">${p.lines}</td><td class="right"><b>${money(p.total)}</b></td><td class="right">${money(p.paid)}</td>
+        <td class="muted">${esc(p.user_name || "")}</td>
+        <td>${p.status === "done" ? `<span class="badge ok">Qabul qilingan</span>` : `<span class="badge off">Bekor qilingan</span>`}</td></tr>`).join("")
+        || `<tr><td colspan="8" class="muted">Tanlangan davrda kirim yo'q</td></tr>`}</tbody>
+    </table></div></div>`);
+  $("#filters", view).addEventListener("submit", (e) => {
+    e.preventDefault();
+    const f = new URLSearchParams();
+    new FormData(e.target).forEach((v, k) => { if (v) f.set(k, v); });
+    go("#/purchases?" + f.toString());
+  });
+  $$("tr[data-id]", view).forEach((tr) => tr.addEventListener("click", () =>
+    purchaseModal(tr.dataset.id, () => viewPurchases()).catch((e) => toast(e.message, true))));
+}
+
+async function viewPurchaseNew() {
+  const [suppliers] = await Promise.all([api("GET", "/api/suppliers"), loadMenu()]);
+  const lines = [];
+  const view = layout(`
+    <div class="toolbar"><a class="btn small" href="#/purchases">← Kirimlar</a><h2>Yangi kirim</h2></div>
+    <div class="doc-layout">
+      <div class="panel">
+        <div id="psearch"></div>
+        <div class="table-scroll"><table class="list doc-lines">
+          <thead><tr><th>Tovar</th><th class="right">Omborda</th><th>Miqdor</th><th>Tannarx (1 birlik)</th><th>Yangi sotish narxi</th><th class="right">Summa</th><th></th></tr></thead>
+          <tbody id="plines"></tbody>
+        </table></div>
+      </div>
+      <form class="panel doc-side" id="pform">
+        <label><span>Ta'minotchi</span>
+          <select name="supplier_id"><option value="">— Ta'minotchisiz (bozordan, darhol to'lanadi) —</option>
+            ${suppliers.map((s) => `<option value="${s.id}">${esc(s.name)}${s.balance ? " · qarz " + money(s.balance) : ""}</option>`).join("")}</select></label>
+        <button type="button" class="btn small" id="new-sup">+ Yangi ta'minotchi</button>
+        <div class="doc-total"><span>Jami</span><b id="ptotal">0 so'm</b></div>
+        <div id="paid-box">
+          <label><span>Hozir to'landi (so'm)</span><input name="paid" type="number" min="0" inputmode="numeric" placeholder="0 — hammasi qarzga"></label>
+        </div>
+        <label><span>Qaysi hisobdan to'landi</span>
+          <select name="account">${ACCOUNTS.map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}</select></label>
+        <label><span>Izoh <i>(faktura raqami va h.k.)</i></span><input name="comment" maxlength="200"></label>
+        <button class="btn primary big">${icon("in")} Kirimni saqlash</button>
+      </form>
+    </div>`);
+  const form = $("#pform", view);
+  const total = () => lines.reduce((s, l) => s + Math.round((+l.cost || 0) * (+l.qty || 0)), 0);
+  const draw = () => {
+    $("#plines", view).innerHTML = lines.map((l, i) => `<tr>
+      <td><b>${esc(l.p.name)}</b><small class="muted"> ${esc(l.p.barcode || "")}</small></td>
+      <td class="right">${stockBadge(l.p)}</td>
+      <td><input data-f="qty" data-i="${i}" type="number" step="${isWeight(l.p) ? "0.001" : "1"}" min="0" value="${l.qty}" style="width:90px"> ${UNITS[l.p.unit]}</td>
+      <td><input data-f="cost" data-i="${i}" type="number" min="0" value="${l.cost}" style="width:120px"></td>
+      <td><input data-f="price" data-i="${i}" type="number" min="0" value="${l.price}" placeholder="${l.p.price}" style="width:120px"></td>
+      <td class="right nowrap" data-sum="${i}">${money((+l.cost || 0) * (+l.qty || 0))}</td>
+      <td><button type="button" class="icon-btn" data-rm="${i}">✕</button></td></tr>`).join("")
+      || `<tr><td colspan="7" class="muted">Tovarni skanerlang yoki qidiring</td></tr>`;
+    $("#ptotal", view).textContent = money(total());
+    $$("#plines input", view).forEach((inp) => inp.addEventListener("input", () => {
+      lines[+inp.dataset.i][inp.dataset.f] = inp.value;
+      const l = lines[+inp.dataset.i];
+      $(`[data-sum="${inp.dataset.i}"]`, view).textContent = money((+l.cost || 0) * (+l.qty || 0));
+      $("#ptotal", view).textContent = money(total());
+    }));
+    $$("[data-rm]", view).forEach((b) => b.addEventListener("click", () => { lines.splice(+b.dataset.rm, 1); draw(); }));
+  };
+  const syncSupplier = () => {
+    const has = !!form.supplier_id.value;
+    $("#paid-box", view).classList.toggle("hidden", !has);
+  };
+  productSearch($("#psearch", view), (p) => {
+    const l = lines.find((x) => x.p.id === p.id);
+    if (l) l.qty = +(+l.qty + 1).toFixed(3);
+    else lines.push({ p, qty: 1, cost: p.cost || "", price: "" });
+    draw();
+    const inp = $(`input[data-f="qty"][data-i="${lines.indexOf(l || lines[lines.length - 1])}"]`, view);
+    if (inp) inp.select();
+  }, "Kirim qilinadigan tovar: shtrix-kod yoki nomi").focus();
+  form.supplier_id.addEventListener("change", syncSupplier);
+  $("#new-sup", view).addEventListener("click", () => openModal(`
+    <form id="sf"><div class="modal-head"><h2>Yangi ta'minotchi</h2><button type="button" class="icon-btn" data-close>✕</button></div>
+      <label><span>Nomi</span><input name="name" required></label>
+      <label><span>Telefon <i>(ixtiyoriy)</i></span><input name="phone" type="tel"></label>
+      <div class="actions"><button type="button" class="btn" data-close>Bekor</button><button class="btn primary">Saqlash</button></div>
+    </form>`, (m) => $("#sf", m).addEventListener("submit", safe(async (e) => {
+    e.preventDefault();
+    const s = await api("POST", "/api/suppliers", formData(e.target));
+    form.supplier_id.insertAdjacentHTML("beforeend", `<option value="${s.id}">${esc(s.name)}</option>`);
+    form.supplier_id.value = s.id;
+    syncSupplier();
+    closeModal();
+  }))));
+  form.addEventListener("submit", safe(async (e) => {
+    e.preventDefault();
+    if (!lines.length) throw new Error("Tovar qo'shing");
+    const body = {
+      supplier_id: form.supplier_id.value || null, paid: +form.paid.value || 0, account: form.account.value,
+      comment: form.comment.value,
+      items: lines.map((l) => ({ product_id: l.p.id, qty: l.qty, cost: l.cost, price: l.price === "" ? null : l.price })),
+    };
+    const p = await api("POST", "/api/purchases", body);
+    toast(`Kirim #${p.id} saqlandi ✅ Qoldiqlar yangilandi`);
+    go("#/purchases");
+  }));
+  syncSupplier();
+  draw();
+}
+
+// --- inventarizatsiya va hisobdan chiqarish
+
+async function viewStockDoc(kind) {
+  const isCount = kind === "count";
+  const [docs] = await Promise.all([api("GET", "/api/stock/docs"), loadMenu()]);
+  const lines = [];
+  const view = layout(`
+    <div class="toolbar"><h2>${isCount ? "Inventarizatsiya" : "Hisobdan chiqarish"}</h2></div>
+    <p class="muted">${isCount
+      ? "Tovarlarni sanab, haqiqiy qoldiqni kiriting. Dastur farqni o'zi hisoblaydi va qoldiqni tuzatadi."
+      : "Yaroqsiz, singan yoki muddati o'tgan tovarlarni ombordan chiqarish."}</p>
+    <div class="doc-layout">
+      <div class="panel">
+        <div id="dsearch"></div>
+        <div class="table-scroll"><table class="list doc-lines">
+          <thead><tr><th>Tovar</th><th class="right">Dasturda</th><th>${isCount ? "Haqiqiy qoldiq" : "Chiqariladigan miqdor"}</th><th class="right">Farq</th><th></th></tr></thead>
+          <tbody id="dlines"></tbody>
+        </table></div>
+      </div>
+      <form class="panel doc-side" id="dform">
+        <div class="doc-total"><span>Farq (tannarxda)</span><b id="dtotal">0 so'm</b></div>
+        <label><span>${isCount ? "Izoh" : "Sababi *"}</span><input name="comment" maxlength="200" ${isCount ? "" : "required"}
+          placeholder="${isCount ? "Masalan: oy oxiri sanoq" : "Masalan: muddati o'tgan"}"></label>
+        <button class="btn primary big">${icon("check")} Saqlash</button>
+      </form>
+    </div>
+    <div class="panel">
+      <h3>Tarix</h3>
+      ${docs.filter((d) => d.kind === kind).map((d) => `
+        <details class="doc-hist"><summary><b>#${d.id}</b> · ${esc(d.created_at.slice(0, 16))} · ${esc(d.user_name || "")} ·
+          ${d.items.length} xil tovar · <span class="${d.total_cost < 0 ? "amount-out" : "amount-in"}">${money(d.total_cost)}</span>
+          ${d.comment ? `<span class="muted"> · ${esc(d.comment)}</span>` : ""}</summary>
+          <table class="list">${d.items.map((i) => `<tr><td>${esc(i.name)}</td><td class="right">${signedQty(i.qty, i.unit)}</td>
+            <td class="right muted">qoldiq ${fmtQty(ifNull(i.balance, 0))}</td></tr>`).join("")}</table></details>`).join("")
+        || `<p class="muted">Hali yo'q</p>`}
+    </div>`);
+  const diff = (l) => isCount ? Math.round(((+l.value || 0) - l.p.stock) * 1000) / 1000 : -(+l.value || 0);
+  const total = () => lines.reduce((s, l) => s + Math.round(diff(l) * l.p.cost), 0);
+  const draw = () => {
+    $("#dlines", view).innerHTML = lines.map((l, i) => `<tr>
+      <td><b>${esc(l.p.name)}</b></td><td class="right">${stockBadge(l.p)}</td>
+      <td><input data-i="${i}" type="number" step="${isWeight(l.p) ? "0.001" : "1"}" min="0" value="${l.value}" style="width:110px"> ${UNITS[l.p.unit]}</td>
+      <td class="right nowrap" data-diff="${i}">${signedQty(diff(l), l.p.unit)}</td>
+      <td><button type="button" class="icon-btn" data-rm="${i}">✕</button></td></tr>`).join("")
+      || `<tr><td colspan="5" class="muted">Tovarni skanerlang yoki qidiring</td></tr>`;
+    $("#dtotal", view).textContent = money(total());
+    $$("#dlines input", view).forEach((inp) => inp.addEventListener("input", () => {
+      const l = lines[+inp.dataset.i];
+      l.value = inp.value;
+      $(`[data-diff="${inp.dataset.i}"]`, view).innerHTML = signedQty(diff(l), l.p.unit);
+      $("#dtotal", view).textContent = money(total());
+    }));
+    $$("[data-rm]", view).forEach((b) => b.addEventListener("click", () => { lines.splice(+b.dataset.rm, 1); draw(); }));
+  };
+  productSearch($("#dsearch", view), (p) => {
+    let i = lines.findIndex((x) => x.p.id === p.id);
+    if (i < 0) {
+      lines.push({ p, value: isCount ? p.stock : 1 });
+      i = lines.length - 1;
+    }
+    draw();
+    const inp = $(`#dlines input[data-i="${i}"]`, view);
+    if (inp) inp.select();
+  }).focus();
+  $("#dform", view).addEventListener("submit", safe(async (e) => {
+    e.preventDefault();
+    if (!lines.length) throw new Error("Tovar qo'shing");
+    const items = lines.map((l) => isCount ? { product_id: l.p.id, actual: l.value } : { product_id: l.p.id, qty: l.value });
+    const r = await api("POST", isCount ? "/api/stock/count" : "/api/stock/writeoff", { items, comment: e.target.comment.value });
+    toast(`Saqlandi ✅ ${r.lines.length} xil tovar qoldig'i tuzatildi`);
+    router();
+  }));
+  draw();
+}
+
+// ------------------------------------------------------------ mahsulotlar
+
+async function viewProducts() {
   await loadMenu();
-  const printers = await api("GET", "/api/printers");
-  const catName = (id) => (state.categories.find((c) => c.id === id) || {}).name || "—";
-  layout(`
-    <div class="two-col">
+  const params = new URLSearchParams(location.hash.split("?")[1] || "");
+  const q = (params.get("q") || "").toLowerCase();
+  const list = state.products.filter((p) => !q || p.name.toLowerCase().indexOf(q) >= 0 || (p.barcode || "") === q);
+  const view = layout(`
+    <div class="two-col products-page">
       <div class="panel">
         <div class="toolbar"><h2>Kategoriyalar</h2><button class="btn primary small" id="add-cat">+ Qo'shish</button></div>
         <table class="list">
           ${state.categories.map((c) => `
             <tr><td>${esc(c.name)}</td>
-              <td class="right">
+              <td class="right nowrap">
                 <button class="btn small" data-edit-cat="${c.id}">✏️</button>
                 <button class="btn small danger" data-del-cat="${c.id}">🗑</button>
               </td></tr>`).join("") || `<tr><td class="muted">Kategoriya yo'q</td></tr>`}
         </table>
       </div>
       <div class="panel">
-        <div class="toolbar"><h2>Taomlar</h2>
+        <div class="toolbar"><h2>Mahsulotlar <span class="muted">${state.products.length}</span></h2>
+          <form id="psearch" class="picker-search" style="flex:1;max-width:280px">${icon("search")}<input name="q" value="${esc(params.get("q") || "")}" placeholder="Nomi yoki shtrix-kod"></form>
           <button class="btn small" id="import-prod">${icon("upload")} Import</button>
-          <button class="btn primary small" id="add-prod">+ Taom qo'shish</button></div>
-        <table class="list">
-          <thead><tr><th></th><th>Nomi</th><th>Kategoriya</th><th>Printer</th>
-            <th class="right">Tannarx</th><th class="right">Sotish narxi</th><th class="right">Foyda</th><th></th></tr></thead>
+          <button class="btn primary small" id="add-prod">+ Mahsulot</button></div>
+        <div class="table-scroll"><table class="list">
+          <thead><tr><th></th><th>Nomi</th><th>Shtrix-kod</th><th>Kategoriya</th><th class="right">Qoldiq</th>
+            <th class="right">Tannarx</th><th class="right">Narx</th><th class="right">Ustama</th><th></th></tr></thead>
           <tbody>
-            ${state.products.map((p) => `
-              <tr><td class="thumb-cell">${p.image ? `<img class="thumb" src="/uploads/${encodeURIComponent(p.image)}" alt="">` : `<div class="thumb empty">🍽️</div>`}</td>
-                <td>${esc(p.name)}</td><td>${esc(catName(p.category_id))}</td>
-                <td>${p.printer_name ? `🖨️ ${esc(p.printer_name)}` : `<span class="muted">—</span>`}</td>
+            ${list.map((p) => `
+              <tr><td class="thumb-cell">${p.image ? `<img class="thumb" src="/uploads/${encodeURIComponent(p.image)}" alt="">` : `<div class="thumb empty">${icon("box")}</div>`}</td>
+                <td><b>${esc(p.name)}</b></td><td class="muted">${esc(p.barcode || "—")}</td><td>${esc(p.category_name || "—")}</td>
+                <td class="right">${stockBadge(p)}</td>
                 <td class="right muted">${p.cost ? money(p.cost) : "—"}</td>
-                <td class="right">${money(p.price)}</td>
-                <td class="right">${p.cost ? money(p.price - p.cost) : "—"}</td>
-                <td class="right">
+                <td class="right">${money(p.price)}${isWeight(p) ? `<small class="muted">/${UNITS[p.unit]}</small>` : ""}</td>
+                <td class="right">${p.cost ? Math.round((p.price - p.cost) / p.cost * 100) + "%" : "—"}</td>
+                <td class="right nowrap">
                   <button class="btn small" data-edit-prod="${p.id}">✏️</button>
                   <button class="btn small danger" data-del-prod="${p.id}">🗑</button>
-                </td></tr>`).join("") || `<tr><td colspan="8" class="muted">Taom yo'q</td></tr>`}
+                </td></tr>`).join("") || `<tr><td colspan="9" class="muted">Mahsulot yo'q</td></tr>`}
           </tbody>
-        </table>
+        </table></div>
       </div>
     </div>`);
 
   const catForm = (c = {}) => openModal(`
-    <form id="f"><h2>${c.id ? "Kategoriyani tahrirlash" : "Yangi kategoriya"}</h2>
+    <form id="f"><div class="modal-head"><h2>${c.id ? "Kategoriyani tahrirlash" : "Yangi kategoriya"}</h2>
+      <button type="button" class="icon-btn" data-close>✕</button></div>
       <label><span>Nomi</span><input name="name" value="${esc(c.name || "")}" required></label>
       <label><span>Tartib raqami</span><input name="sort" type="number" value="${ifNull(c.sort, state.categories.length)}"></label>
       <div class="actions"><button type="button" class="btn" data-close>Bekor</button><button class="btn primary">Saqlash</button></div>
@@ -2029,53 +2392,53 @@ async function viewMenu() {
     await api(c.id ? "PUT" : "POST", "/api/categories" + (c.id ? "/" + c.id : ""), formData(e.target));
     closeModal();
     toast("Saqlandi");
-    viewMenu();
+    viewProducts();
   })));
 
   const prodForm = (p = {}) => openModal(`
-    <form id="f" class="product-form"><h2>${p.id ? "Taomni tahrirlash" : "Yangi taom"}</h2>
-      <label><span>Mahsulot nomi</span><input name="name" value="${esc(p.name || "")}" placeholder="Masalan: Osh" required></label>
+    <form id="f" class="product-form"><div class="modal-head"><h2>${p.id ? "Mahsulotni tahrirlash" : "Yangi mahsulot"}</h2>
+      <button type="button" class="icon-btn" data-close>✕</button></div>
+      <label><span>Nomi *</span><input name="name" value="${esc(p.name || "")}" placeholder="Masalan: Coca-Cola 1.5 l" required></label>
+      <label><span>Shtrix-kod</span>
+        <div class="row-input"><input name="barcode" value="${esc(p.barcode || "")}" placeholder="Skanerlang yoki yozing" autocomplete="off">
+          <button type="button" class="btn small" id="gen-code" title="Shtrix-kodi yo'q tovar uchun ichki kod">Kod yaratish</button></div></label>
       <div class="grid-2">
+        <label><span>Kategoriya</span>
+          <select name="category_id"><option value="">— Kategoriyasiz —</option>
+            ${state.categories.map((c) => `<option value="${c.id}" ${c.id === p.category_id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}
+          </select></label>
+        <label><span>O'lchov birligi</span>
+          <select name="unit">${Object.keys(UNITS).map((u) => `<option value="${u}" ${u === (p.unit || "dona") ? "selected" : ""}>${UNITS[u]}</option>`).join("")}</select></label>
         <label><span>Tannarxi (so'm)</span><input name="cost" type="number" min="0" value="${p.cost || ""}" placeholder="0"></label>
-        <label><span>Sotish narxi (so'm)</span><input name="price" type="number" min="0" value="${ifNull(p.price, "")}" required></label>
+        <label><span>Sotish narxi (so'm) *</span><input name="price" type="number" min="0" value="${ifNull(p.price, "")}" required></label>
+        <label><span>Minimal qoldiq <i>(shundan kam bo'lsa ogohlantiradi)</i></span><input name="min_stock" type="number" step="any" min="0" value="${p.min_stock || ""}" placeholder="0"></label>
+        ${p.id ? `<label><span>Qoldiq</span><input value="${fmtQty(p.stock)} ${UNITS[p.unit]}" disabled>
+          <small class="muted">Kirim yoki inventarizatsiya orqali o'zgaradi</small></label>`
+          : `<label><span>Boshlang'ich qoldiq</span><input name="stock" type="number" step="any" min="0" placeholder="0"></label>`}
       </div>
       <div class="muted" id="margin"></div>
       <div class="image-field">
         <div class="image-preview" id="img-preview"></div>
         <div>
-          <span class="field-label">Rasmi</span>
+          <span class="field-label">Rasmi <i>(ixtiyoriy)</i></span>
           <label class="btn small file-btn">📷 Rasm tanlash<input type="file" id="img-input" accept="image/*" hidden></label>
           <button type="button" class="btn small danger hidden" id="img-remove">O'chirish</button>
         </div>
       </div>
-      <label><span>Kategoriyasi</span>
-        <select name="category_id">
-          <option value="">— Kategoriyasiz —</option>
-          ${state.categories.map((c) => `<option value="${c.id}" ${c.id === p.category_id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}
-        </select></label>
-      <label><span>Qaysi printerdan chiqadi <i>(ixtiyoriy)</i></span>
-        <select name="printer_id">
-          <option value="">— Printersiz —</option>
-          ${printers.map((pr) => `<option value="${pr.id}" ${pr.id === p.printer_id ? "selected" : ""}>🖨️ ${esc(pr.name)}</option>`).join("")}
-        </select>
-        <small class="muted">${printers.length
-          ? "Masalan: osh → Oshxona, salat → Salatxona, ichimlik → Bar"
-          : "Printerlar hali qo'shilmagan — \"🖨️ Printerlar\" bo'limida qo'shing"}</small>
-      </label>
       <div class="actions"><button type="button" class="btn" data-close>Bekor</button><button class="btn primary">Saqlash</button></div>
     </form>`, (m) => {
-    let image = null;        // yangi tanlangan rasm (data URL)
+    let image = null;
     let removeImage = false;
     const preview = $("#img-preview", m);
     const showPreview = () => {
       const src = image || (!removeImage && p.image ? "/uploads/" + encodeURIComponent(p.image) : null);
-      preview.innerHTML = src ? `<img src="${src}" alt="">` : "🍽️";
+      preview.innerHTML = src ? `<img src="${src}" alt="">` : icon("box");
       $("#img-remove", m).classList.toggle("hidden", !src);
     };
     const showMargin = () => {
       const cost = +$("input[name=cost]", m).value || 0;
       const price = +$("input[name=price]", m).value || 0;
-      $("#margin", m).textContent = cost && price ? `Foyda: ${money(price - cost)} (${Math.round((price - cost) / price * 100)}%)` : "";
+      $("#margin", m).textContent = cost && price ? `Foyda: ${money(price - cost)} · ustama ${Math.round((price - cost) / cost * 100)}%` : "";
     };
     $("#img-input", m).addEventListener("change", safe(async (e) => {
       const file = e.target.files[0];
@@ -2084,14 +2447,16 @@ async function viewMenu() {
       removeImage = false;
       showPreview();
     }));
-    $("#img-remove", m).addEventListener("click", () => {
-      image = null;
-      removeImage = true;
-      $("#img-input", m).value = "";
-      showPreview();
-    });
+    $("#img-remove", m).addEventListener("click", () => { image = null; removeImage = true; $("#img-input", m).value = ""; showPreview(); });
     $("input[name=cost]", m).addEventListener("input", showMargin);
     $("input[name=price]", m).addEventListener("input", showMargin);
+    $("#gen-code", m).addEventListener("click", safe(async () => {
+      $("input[name=barcode]", m).value = (await api("GET", "/api/products/new-barcode")).barcode;
+    }));
+    // skaner Enter bossa forma yuborilmasin - keyingi maydonga o'tamiz
+    $("input[name=barcode]", m).addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); $("select[name=category_id]", m).focus(); }
+    });
     showPreview();
     showMargin();
     $("#f", m).addEventListener("submit", safe(async (e) => {
@@ -2099,143 +2464,46 @@ async function viewMenu() {
       const data = formData(e.target);
       if (image) data.image = image;
       if (removeImage) data.remove_image = true;
-      const btn = $("button.primary", e.target);
-      btn.disabled = true;
-      try {
-        await api(p.id ? "PUT" : "POST", "/api/products" + (p.id ? "/" + p.id : ""), data);
-      } finally {
-        btn.disabled = false;
-      }
+      await api(p.id ? "PUT" : "POST", "/api/products" + (p.id ? "/" + p.id : ""), data);
       closeModal();
       toast("Saqlandi");
-      viewMenu();
+      viewProducts();
     }));
   });
 
-  $("#add-cat").addEventListener("click", () => catForm());
-  $("#add-prod").addEventListener("click", () => prodForm());
-  $("#import-prod").addEventListener("click", () => importModal("products", "Mahsulotlarni import qilish", viewMenu));
-  $$("[data-edit-cat]").forEach((b) => b.addEventListener("click", () =>
+  $("#psearch", view).addEventListener("submit", (e) => {
+    e.preventDefault();
+    const v = e.target.q.value.trim();
+    go("#/products" + (v ? "?q=" + encodeURIComponent(v) : ""));
+  });
+  $("#add-cat", view).addEventListener("click", () => catForm());
+  $("#add-prod", view).addEventListener("click", () => prodForm());
+  $("#import-prod", view).addEventListener("click", () => importModal("products", "Mahsulotlarni import qilish", viewProducts));
+  $$("[data-edit-cat]", view).forEach((b) => b.addEventListener("click", () =>
     catForm(state.categories.find((c) => c.id === +b.dataset.editCat))));
-  $$("[data-edit-prod]").forEach((b) => b.addEventListener("click", () =>
+  $$("[data-edit-prod]", view).forEach((b) => b.addEventListener("click", () =>
     prodForm(state.products.find((p) => p.id === +b.dataset.editProd))));
-  $$("[data-del-cat]").forEach((b) => b.addEventListener("click", safe(async () => {
+  $$("[data-del-cat]", view).forEach((b) => b.addEventListener("click", safe(async () => {
     if (!confirm("Kategoriyani o'chirasizmi?")) return;
     await api("DELETE", "/api/categories/" + b.dataset.delCat);
-    viewMenu();
+    viewProducts();
   })));
-  $$("[data-del-prod]").forEach((b) => b.addEventListener("click", safe(async () => {
-    if (!confirm("Taomni o'chirasizmi?")) return;
+  $$("[data-del-prod]", view).forEach((b) => b.addEventListener("click", safe(async () => {
+    if (!confirm("Mahsulotni o'chirasizmi? (sotuvlar tarixi saqlanadi)")) return;
     await api("DELETE", "/api/products/" + b.dataset.delProd);
-    viewMenu();
-  })));
-}
-
-// ------------------------------------------------------------ stollar sozlamasi (admin)
-
-async function viewTablesAdmin() {
-  const [halls, tables] = await Promise.all([api("GET", "/api/halls"), api("GET", "/api/tables")]);
-  const hallName = (id) => (halls.find((h) => h.id === id) || {}).name || "—";
-  layout(`
-    <div class="two-col">
-      <div class="panel">
-        <div class="toolbar"><h2>Zallar</h2><button class="btn primary small" id="add-hall">+ Zal qo'shish</button></div>
-        <p class="muted">Masalan: Asosiy zal, Banket zali, Kabinalar, Yozgi terassa</p>
-        <table class="list">
-          ${halls.map((h) => `
-            <tr><td><b>${esc(h.name)}</b><div class="muted">${h.tables} ta stol ·
-              xizmat haqi ${h.service_percent === null ? `${percent(state.settings.service_percent)} (umumiy)` : percent(h.service_percent)}</div></td>
-              <td class="right" style="white-space:nowrap">
-                <button class="btn small" data-edit-hall="${h.id}">✏️</button>
-                <button class="btn small danger" data-del-hall="${h.id}">🗑</button>
-              </td></tr>`).join("") || `<tr><td class="muted">Zal yo'q</td></tr>`}
-        </table>
-      </div>
-      <div class="panel">
-        <div class="toolbar"><h2>Stollar va kabinalar</h2><button class="btn primary small" id="add">+ Stol qo'shish</button></div>
-        <table class="list">
-          <thead><tr><th>Nomi</th><th>Zal</th><th>O'rinlar</th><th>Holati</th><th></th></tr></thead>
-          <tbody>
-            ${tables.map((t) => `
-              <tr><td>${esc(t.name)}</td><td>${esc(hallName(t.hall_id))}</td><td>${t.seats}</td>
-                <td><span class="badge">${t.order ? "Band" : "Bo'sh"}</span></td>
-                <td class="right" style="white-space:nowrap">
-                  <button class="btn small" data-edit="${t.id}">✏️</button>
-                  <button class="btn small danger" data-del="${t.id}">🗑</button>
-                </td></tr>`).join("") || `<tr><td colspan="5" class="muted">Stol yo'q</td></tr>`}
-          </tbody>
-        </table>
-      </div>
-    </div>`);
-
-  const hallForm = (h = {}) => openModal(`
-    <form id="f"><h2>${h.id ? "Zalni tahrirlash" : "Yangi zal"}</h2>
-      <label><span>Nomi</span><input name="name" value="${esc(h.name || "")}" placeholder="Banket zali" required></label>
-      <label><span>Xizmat haqi, % <i>(bo'sh qoldirilsa umumiy: ${percent(state.settings.service_percent)})</i></span>
-        <input name="service_percent" type="number" min="0" max="100" step="0.5"
-          value="${ifNull(h.service_percent, "")}" placeholder="${state.settings.service_percent}"></label>
-      <label><span>Tartib raqami</span><input name="sort" type="number" value="${ifNull(h.sort, halls.length)}"></label>
-      <div class="actions"><button type="button" class="btn" data-close>Bekor</button><button class="btn primary">Saqlash</button></div>
-    </form>`, (m) => $("#f", m).addEventListener("submit", safe(async (e) => {
-    e.preventDefault();
-    await api(h.id ? "PUT" : "POST", "/api/halls" + (h.id ? "/" + h.id : ""), formData(e.target));
-    closeModal();
-    toast("Saqlandi");
-    viewTablesAdmin();
-  })));
-
-  const form = (t = {}) => {
-    const hallId = ifNull(t.hall_id, (halls[0] || {}).id);
-    const inHall = tables.filter((x) => x.hall_id === hallId).length;
-    openModal(`
-      <form id="f"><h2>${t.id ? "Stolni tahrirlash" : "Yangi stol"}</h2>
-        <label><span>Zal</span>
-          <select name="hall_id">
-            <option value="">— Zalsiz —</option>
-            ${halls.map((h) => `<option value="${h.id}" ${h.id === hallId ? "selected" : ""}>${esc(h.name)}</option>`).join("")}
-          </select></label>
-        <label><span>Nomi (masalan: Stol 5, Kabina 2)</span><input name="name" value="${esc(t.name || `Stol ${inHall + 1}`)}" required></label>
-        <label><span>O'rinlar soni</span><input name="seats" type="number" min="1" value="${ifNull(t.seats, 4)}"></label>
-        <div class="actions"><button type="button" class="btn" data-close>Bekor</button><button class="btn primary">Saqlash</button></div>
-      </form>`, (m) => $("#f", m).addEventListener("submit", safe(async (e) => {
-      e.preventDefault();
-      await api(t.id ? "PUT" : "POST", "/api/tables" + (t.id ? "/" + t.id : ""), formData(e.target));
-      closeModal();
-      toast("Saqlandi");
-      viewTablesAdmin();
-    })));
-  };
-
-  $("#add-hall").addEventListener("click", () => hallForm());
-  $("#add").addEventListener("click", () => form());
-  $$("[data-edit-hall]").forEach((b) => b.addEventListener("click", () =>
-    hallForm(halls.find((h) => h.id === +b.dataset.editHall))));
-  $$("[data-del-hall]").forEach((b) => b.addEventListener("click", safe(async () => {
-    if (!confirm("Zalni o'chirasizmi?")) return;
-    await api("DELETE", "/api/halls/" + b.dataset.delHall);
-    viewTablesAdmin();
-  })));
-  $$("[data-edit]").forEach((b) => b.addEventListener("click", () =>
-    form(tables.find((t) => t.id === +b.dataset.edit))));
-  $$("[data-del]").forEach((b) => b.addEventListener("click", safe(async () => {
-    if (!confirm("Stolni o'chirasizmi?")) return;
-    await api("DELETE", "/api/tables/" + b.dataset.del);
-    viewTablesAdmin();
+    viewProducts();
   })));
 }
 
 // ------------------------------------------------------------ xodimlar (admin)
 
 const PERMISSION_LIST = [
-  ["tables", "tables", "Stollar va buyurtmalar"],
-  ["cashier", "cashier", "Kassa (to'lov, bekor qilish)"],
-  ["kitchen", "kitchen", "Oshxona ekrani"],
+  ["cashier", "cashier", "Kassa (sotuv, qaytarish)"],
+  ["products", "box", "Mahsulotlar"],
+  ["warehouse", "warehouse", "Ombor (kirim, inventarizatsiya)"],
   ["reports", "reports", "Hisobot"],
-  ["menu", "menu", "Menyu"],
-  ["crm", "crm", "CRM (mijozlar, qarzlar)"],
+  ["crm", "crm", "CRM (mijozlar, nasiyalar)"],
   ["finance", "finance", "Moliya (kassa, kirim-chiqim)"],
-  ["halls", "halls", "Zallar va stollar"],
-  ["printers", "printer", "Printerlar"],
   ["users", "users", "Xodimlar"],
   ["settings", "settings", "Sozlamalar"],
   ["journal", "journal", "Jurnal (barcha amallar)"],
@@ -2363,256 +2631,20 @@ function viewNoAccess() {
     <p class="muted">Sizga hali birorta bo'limga ruxsat berilmagan. Administratorga murojaat qiling.</p></div>`);
 }
 
-// ------------------------------------------------------------ printerlar (admin)
-
-async function viewPrinters() {
-  const printers = await api("GET", "/api/printers");
-  const where = (p) => p.kind === "network" ? `${esc(p.address)}:${p.port}` : esc(p.address);
-  layout(`
-    <div class="panel" style="max-width:900px">
-      <div class="toolbar"><h2>Oshxona printerlari</h2><button class="btn primary small" id="add">+ Printer qo'shish</button></div>
-      <p class="muted">Har bir taomga Menyu bo'limida printer biriktiriladi. Buyurtmada "🖨️ Oshxona printeriga"
-        bosilganda har bir taom o'z printeridan chiqadi.</p>
-      <table class="list">
-        <thead><tr><th>Nomi</th><th>Ulanish</th><th>Manzil</th><th>Qog'oz</th><th></th></tr></thead>
-        <tbody>
-          ${printers.map((p) => `
-            <tr><td><b>${esc(p.name)}</b></td><td>${PRINTER_KINDS[p.kind]}</td><td>${where(p)}</td><td>${p.width} mm</td>
-              <td class="right" style="white-space:nowrap">
-                <button class="btn small" data-test="${p.id}">🧪 Sinov</button>
-                <button class="btn small" data-edit="${p.id}">✏️</button>
-                <button class="btn small danger" data-del="${p.id}">🗑</button>
-              </td></tr>`).join("") || `<tr><td colspan="5" class="muted">Printer yo'q</td></tr>`}
-        </tbody>
-      </table>
-    </div>`);
-
-  const form = (p = { kind: "system", port: 9100, width: 80 }) => openModal(`
-    <form id="f"><h2>${p.id ? "Printerni tahrirlash" : "Yangi printer"}</h2>
-      <label><span>Nomi (masalan: Oshxona, Salatxona, Bar)</span><input name="name" value="${esc(p.name || "")}" required></label>
-      <div class="kind-switch">
-        ${["system", "network"].map((k) => `
-          <label class="kind-option"><input type="radio" name="kind" value="${k}" ${k === p.kind ? "checked" : ""}>
-            <span>${k === "system" ? "🔌 USB / Wi-Fi<small>Kompyuterga o'rnatilgan printer</small>"
-                                   : "🌐 Tarmoq (IP)<small>LAN / Wi-Fi termoprinter, 9100-port</small>"}</span></label>`).join("")}
-      </div>
-      <div id="system-box">
-        <span class="field-label">Kompyuterga ulangan printerlar</span>
-        <div class="device-list" id="system-list"><p class="muted">Qidirilmoqda...</p></div>
-        <button type="button" class="btn small" id="system-refresh">🔄 Yangilash</button>
-      </div>
-      <div id="network-box">
-        <div class="grid-2">
-          <label><span>IP manzil</span><input name="ip" value="${p.kind === "network" ? esc(p.address || "") : ""}" placeholder="192.168.1.100"></label>
-          <label><span>Port</span><input name="port" type="number" value="${p.port || 9100}"></label>
-        </div>
-        <button type="button" class="btn small" id="scan-btn">🔍 Tarmoqdan qidirish</button>
-        <div class="device-list" id="scan-list"></div>
-      </div>
-      <label><span>Qog'oz kengligi</span>
-        <select name="width">
-          <option value="80" ${p.width >= 80 ? "selected" : ""}>80 mm</option>
-          <option value="58" ${p.width < 80 ? "selected" : ""}>58 mm</option>
-        </select></label>
-      <div class="actions"><button type="button" class="btn" data-close>Bekor</button><button class="btn primary">Saqlash</button></div>
-    </form>`, (m) => {
-    let systemName = p.kind === "system" || p.kind === "windows" ? p.address : "";
-    const kind = () => $("input[name=kind]:checked", m).value;
-    const sync = () => {
-      $("#system-box", m).classList.toggle("hidden", kind() !== "system");
-      $("#network-box", m).classList.toggle("hidden", kind() !== "network");
-    };
-
-    async function loadSystem() {
-      const list = $("#system-list", m);
-      list.innerHTML = `<p class="muted">Qidirilmoqda...</p>`;
-      let devices;
-      try {
-        devices = await api("GET", "/api/printers/system");
-      } catch (e) {
-        list.innerHTML = `<p class="error">${esc(e.message)}</p>`;
-        return;
-      }
-      if (systemName && !devices.some((d) => d.name === systemName)) {
-        devices.unshift({ name: systemName, connection: "hozir topilmadi", port: "" });
-      }
-      list.innerHTML = devices.map((d) => `
-        <label class="device ${d.name === systemName ? "selected" : ""}">
-          <input type="radio" name="device" value="${esc(d.name)}" ${d.name === systemName ? "checked" : ""}>
-          <span><b>${esc(d.name)}</b><small>${esc(d.connection)}${d.port && d.port !== d.connection ? " · " + esc(d.port) : ""}</small></span>
-        </label>`).join("") || `<p class="muted">Printer topilmadi. Printerni USB yoki Wi-Fi orqali ulab, Windows'da o'rnating
-          (drayverini o'rnating), so'ng "Yangilash" ni bosing.</p>`;
-      $$("input[name=device]", list).forEach((r) => r.addEventListener("change", () => {
-        systemName = r.value;
-        $$(".device", list).forEach((d) => d.classList.toggle("selected", d.contains(r)));
-      }));
-    }
-
-    $$("input[name=kind]", m).forEach((r) => r.addEventListener("change", sync));
-    $("#system-refresh", m).addEventListener("click", loadSystem);
-    $("#scan-btn", m).addEventListener("click", safe(async () => {
-      const btn = $("#scan-btn", m);
-      const list = $("#scan-list", m);
-      btn.disabled = true;
-      list.innerHTML = `<p class="muted">Tarmoq tekshirilmoqda (bir necha soniya)...</p>`;
-      try {
-        const found = await api("GET", "/api/printers/scan");
-        list.innerHTML = found.map((d) => `
-          <button type="button" class="device" data-ip="${esc(d.address)}"><b>${esc(d.address)}</b><small>9100-port ochiq</small></button>`).join("")
-          || `<p class="muted">Tarmoqda printer topilmadi. Printer va kompyuter bitta Wi-Fi/tarmoqda ekanini tekshiring.</p>`;
-        $$("[data-ip]", list).forEach((b) => b.addEventListener("click", () => {
-          $("input[name=ip]", m).value = b.dataset.ip;
-          $$(".device", list).forEach((d) => d.classList.toggle("selected", d === b));
-        }));
-      } finally {
-        btn.disabled = false;
-      }
-    }));
-    sync();
-    loadSystem();
-
-    $("#f", m).addEventListener("submit", safe(async (e) => {
-      e.preventDefault();
-      const f = formData(e.target);
-      const data = { name: f.name, kind: kind(), width: f.width, port: f.port };
-      data.address = data.kind === "system" ? systemName : f.ip.trim();
-      if (!data.address) throw new Error(data.kind === "system" ? "Ro'yxatdan printerni tanlang" : "IP manzilni kiriting");
-      await api(p.id ? "PUT" : "POST", "/api/printers" + (p.id ? "/" + p.id : ""), data);
-      closeModal();
-      toast("Saqlandi");
-      viewPrinters();
-    }));
-  });
-
-  $("#add").addEventListener("click", () => form());
-  $$("[data-edit]").forEach((b) => b.addEventListener("click", () =>
-    form((({ kind, ...rest }) => ({ ...rest, kind: kind === "windows" ? "system" : kind }))(printers.find((p) => p.id === +b.dataset.edit)))));
-  $$("[data-test]").forEach((b) => b.addEventListener("click", safe(async () => {
-    b.disabled = true;
-    try {
-      await api("POST", `/api/printers/${b.dataset.test}/test`);
-      toast("Sinov cheki yuborildi ✅");
-    } finally {
-      b.disabled = false;
-    }
-  })));
-  $$("[data-del]").forEach((b) => b.addEventListener("click", safe(async () => {
-    if (!confirm("Printerni o'chirasizmi? Unga biriktirilgan taomlar printersiz qoladi.")) return;
-    await api("DELETE", "/api/printers/" + b.dataset.del);
-    viewPrinters();
-  })));
-}
-
-// ------------------------------------------------------------ oshxona ekrani
-
-let kitchenTimer = null;
-
-function beep() {
-  try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const osc = ctx.createOscillator();
-    osc.frequency.value = 880;
-    osc.connect(ctx.destination);
-    osc.start();
-    osc.stop(ctx.currentTime + 0.25);
-  } catch { /* ovoz ishlamasa ham ekran ishlayveradi */ }
-}
-
-function minutesAgo(s) {
-  const t = new Date(s.replace(" ", "T"));
-  return Math.max(0, Math.floor((Date.now() - t) / 60000));
-}
-
-async function viewKitchen() {
-  const printers = await api("GET", "/api/printers");
-  let station = "";
-  try { station = localStorage.getItem("kitchen-station") || ""; } catch { /* ruxsat yo'q */ }
-  let known = null;
-
-  const view = layout(`
-    <div class="toolbar">
-      <h2>🍳 Oshxona</h2>
-      <select id="station" style="width:auto">
-        <option value="">Barcha bo'limlar</option>
-        ${printers.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join("")}
-        <option value="none">Printersiz taomlar</option>
-      </select>
-    </div>
-    <div class="kitchen-grid" id="tickets"></div>`);
-  const select = $("#station", view);
-  select.value = station;
-  if (select.value !== station) station = "";
-  select.addEventListener("change", () => {
-    station = select.value;
-    try { localStorage.setItem("kitchen-station", station); } catch { /* ruxsat yo'q */ }
-    known = null;
-    refresh();
-  });
-
-  async function refresh() {
-    if (!location.hash.startsWith("#/kitchen") || !document.body.contains(view)) return stop();
-    let tickets;
-    try {
-      tickets = await api("GET", "/api/kitchen" + (station ? "?printer_id=" + station : ""));
-    } catch {
-      return;
-    }
-    if (!document.body.contains(view)) return;
-    if (known && tickets.some((t) => !known.has(t.id))) beep();
-    known = new Set(tickets.map((t) => t.id));
-    $("#tickets", view).innerHTML = tickets.map((t) => {
-      const mins = minutesAgo(t.created_at);
-      return `
-        <div class="ticket ${mins >= 15 ? "late" : ""}">
-          <div class="ticket-head">
-            <b>${t.type === "takeaway" ? "🥡" : "🪑"} ${esc(place(t))} · #${t.order_id}</b>
-            <span>${mins} daq</span>
-          </div>
-          <div class="muted">${esc(t.waiter_name || "")}${t.printer_name ? " · " + esc(t.printer_name) : ""}</div>
-          <ul>${t.lines.map((l) => l.qty > 0
-            ? `<li><b>${l.qty} ×</b> ${esc(l.name)}</li>`
-            : `<li class="cancel"><b>BEKOR ${-l.qty} ×</b> ${esc(l.name)}</li>`).join("")}</ul>
-          <button class="btn primary big" data-ready="${t.id}">✅ Tayyor</button>
-        </div>`;
-    }).join("") || `<p class="muted">Hozircha yangi buyurtma yo'q</p>`;
-    $$("[data-ready]", view).forEach((b) => b.addEventListener("click", safe(async () => {
-      b.disabled = true;
-      await api("POST", `/api/kitchen/${b.dataset.ready}/ready`);
-      refresh();
-    })));
-  }
-
-  function stop() {
-    clearInterval(kitchenTimer);
-    kitchenTimer = null;
-  }
-
-  stop();
-  kitchenTimer = setInterval(refresh, 5000);
-  refresh();
-}
-
 // ------------------------------------------------------------ sozlamalar (admin)
 
 async function viewSettings() {
   await loadSettings();
-  const [halls, network] = await Promise.all([api("GET", "/api/halls"), api("GET", "/api/network")]);
+  const network = await api("GET", "/api/network");
   const s = state.settings;
   layout(`
     <form class="panel settings" id="f" style="max-width:640px">
       <h2>⚙️ Sozlamalar</h2>
-      <label><span>Kafe nomi (chekda chiqadi)</span><input name="cafe_name" value="${esc(s.cafe_name)}" required></label>
-      <label><span>Xizmat haqi, % — stolda o'tirganlarga umumiy summadan qo'shiladi</span>
-        <input name="service_percent" type="number" min="0" max="100" step="0.5" value="${s.service_percent}"></label>
-      <p class="muted">Olib ketish buyurtmalariga xizmat haqi qo'shilmaydi. 0 qo'yilsa xizmat haqi olinmaydi.</p>
-      <div id="example" class="example"></div>
-      ${halls.length ? `
-        <h3>Zallar bo'yicha</h3>
-        <table class="list">
-          ${halls.map((h) => `<tr><td>${esc(h.name)}</td><td class="right">${h.service_percent === null
-            ? `<span class="muted">umumiy</span>` : percent(h.service_percent)}</td></tr>`).join("")}
-        </table>
-        <p class="muted">Kabina yoki banket zali uchun boshqa foiz kerak bo'lsa, "🏛️ Zallar" bo'limida zalni tahrirlang.</p>` : ""}
+      <label><span>Do'kon nomi (chekda chiqadi)</span><input name="shop_name" value="${esc(s.shop_name)}" required></label>
+      <label class="check-line"><input type="checkbox" name="allow_negative" ${s.allow_negative === "1" ? "checked" : ""}>
+        Omborda yo'q (qoldig'i yetmaydigan) tovarni ham sotishga ruxsat berish</label>
+      <p class="muted">Belgilanmasa, kassa qoldiqdan ko'p sotishga ruxsat bermaydi. Belgilansa, qoldiq minusga tushadi —
+        keyin kirim yoki inventarizatsiya bilan to'g'rilanadi.</p>
       <div class="actions"><button class="btn primary">Saqlash</button></div>
     </form>
     <div class="panel network-panel" style="max-width:640px">
@@ -2643,18 +2675,10 @@ async function viewSettings() {
       toast(b.dataset.copy);
     }
   }));
-  const input = $("input[name=service_percent]");
-  const example = () => {
-    const p = +input.value || 0;
-    $("#example").innerHTML = p
-      ? `Misol: buyurtma ${money(100000)} → xizmat haqi <b>${money(100000 * p / 100)}</b> → jami <b>${money(100000 + 100000 * p / 100)}</b>`
-      : "";
-  };
-  input.addEventListener("input", example);
-  example();
   $("#f").addEventListener("submit", safe(async (e) => {
     e.preventDefault();
-    state.settings = await api("PUT", "/api/settings", formData(e.target));
+    state.settings = await api("PUT", "/api/settings", {
+      shop_name: e.target.shop_name.value, allow_negative: e.target.allow_negative.checked });
     toast("Saqlandi ✅");
     viewSettings();
   }));
@@ -2662,7 +2686,7 @@ async function viewSettings() {
 
 // ------------------------------------------------------------ jurnal (barcha amallar tarixi)
 
-const JOURNAL_ICONS = { sales: "sales", orders: "tables", finance: "finance", crm: "crm", menu: "box",
+const JOURNAL_ICONS = { sales: "sales", warehouse: "warehouse", finance: "finance", crm: "crm", products: "box",
   users: "users", settings: "settings", auth: "logout" };
 // So'rov maydonlari nomlari (batafsil oynada)
 const FIELD_NAMES = {
@@ -2672,9 +2696,10 @@ const FIELD_NAMES = {
   customer_id: "Mijoz ID", supplier_id: "Ta'minotchi ID", type_id: "Tranzaksiya turi ID", direction: "Yo'nalish",
   first_name: "Ism", last_name: "Familiya", full_name: "F.I.Sh", username: "Login", role: "Lavozim",
   permissions: "Ruxsatlar", active: "Faol", password: "Parol", image: "Rasm", file_name: "Fayl", data: "Fayl",
-  cafe_name: "Kafe nomi", service_percent: "Xizmat haqi, %", seats: "O'rinlar", hall_id: "Zal ID", sort: "Tartib",
+  shop_name: "Do'kon nomi", allow_negative: "Minusga sotish", barcode: "Shtrix-kod", unit: "Birlik", stock: "Qoldiq",
+  min_stock: "Minimal qoldiq", actual: "Haqiqiy qoldiq", paid: "To'landi", items: "Tovarlar", sort: "Tartib",
   kind: "Turi", address: "Manzil", port: "Port", width: "Qog'oz kengligi", enabled: "Yoqilgan", token: "Token",
-  chats: "Chatlar", categories: "Bo'limlar", table_id: "Stol ID", type: "Turi", remove_image: "Rasmni olib tashlash",
+  chats: "Chatlar", categories: "Bo'limlar", type: "Turi", remove_image: "Rasmni olib tashlash",
 };
 
 function requestValue(v) {
@@ -2706,7 +2731,7 @@ function journalDetail(id) {
           <table class="list jd-fields">${d.fields.map(([k, v]) =>
             `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`).join("")}</table>` : ""}
         ${(d.items || []).length ? `
-          <h3>Taomlar</h3>
+          <h3>Tovarlar</h3>
           <table class="list jd-items"><thead><tr><th>Nomi</th><th class="right">Soni</th>
             ${d.items[0].price !== undefined ? `<th class="right">Narxi</th><th class="right">Summa</th>` : ""}</tr></thead>
             <tbody>${d.items.map((i) => `<tr><td>${esc(i.name)}</td><td class="right">${i.qty}</td>
@@ -2718,10 +2743,13 @@ function journalDetail(id) {
               <td>${esc(requestValue(d.request[k]))}</td></tr>`).join("")}</table>
           </details>` : ""}
         <div class="actions">
-          ${orderId && can("tables", "cashier", "reports") ? `<a class="btn" href="#/order/${orderId}">Buyurtmani ochish</a>` : ""}
+          ${orderId && can("cashier", "reports", "finance") ? `<button type="button" class="btn" id="open-sale">Chekni ochish</button>` : ""}
           <button type="button" class="btn primary" data-close>Yopish</button>
         </div>
-      </div>`);
+      </div>`, (m) => {
+      const open = $("#open-sale", m);
+      if (open) open.addEventListener("click", () => saleModal(orderId).catch((e) => toast(e.message, true)));
+    });
   });
 }
 
@@ -2748,7 +2776,7 @@ async function viewJournal() {
       <input type="date" name="to" value="${d.to}" style="width:auto">
       ${sel("user_id", [["", "Barcha xodimlar"], ...d.users.map((u) => [u.id, u.full_name])], params.get("user_id"))}
       ${sel("category", [["", "Barcha bo'limlar"], ...cats], params.get("category"))}
-      <input type="search" name="q" placeholder="Qidirish: taom, mijoz, summa..." value="${esc(params.get("q") || "")}" style="width:220px">
+      <input type="search" name="q" placeholder="Qidirish: tovar, mijoz, summa..." value="${esc(params.get("q") || "")}" style="width:220px">
       <button class="btn primary">Ko'rsatish</button>
     </form>
     <div class="panel">
@@ -3005,7 +3033,7 @@ async function viewCustomerBot(cfgArg) {
         <h3>Mijozlar botini ulash</h3>
         <p class="muted">Bu — mijozlaringiz uchun <b>alohida</b> bot. Telegram'da
           <a href="https://t.me/BotFather" target="_blank" rel="noopener"><b>@BotFather</b></a> → <b>/newbot</b>
-          (masalan "Kafe mijozlari" nomi bilan) va bergan tokenni shu yerga qo'ying.</p>
+          (masalan "Do'kon mijozlari" nomi bilan) va bergan tokenni shu yerga qo'ying.</p>
         <form id="cb-connect" class="row-input">
           <input id="cb-token" autocomplete="off" spellcheck="false" placeholder="123456789:AAH..." required>
           <button class="btn primary">Ulash</button>
@@ -3084,21 +3112,21 @@ async function viewCustomerBot(cfgArg) {
 
 // Sozlamalar > Chek: chekda nimalar chiqishini belgilash, o'ngda jonli namuna
 const RECEIPT_OPTIONS = [
-  ["show_logo", "Logo"], ["show_cafe_name", "Kafe nomi"], ["show_order_number", "Chek raqami"],
-  ["show_date", "Sana va vaqt"], ["show_place", "Stol / zal"], ["show_waiter", "Ofitsiant"],
-  ["show_cashier", "Kassir"], ["show_customer", "Mijoz"], ["show_item_price", "Taom narxi (soni × narx)"],
-  ["show_service", "Xizmat haqi"], ["show_discount", "Chegirma"], ["show_payment", "To'lov turi"],
+  ["show_logo", "Logo"], ["show_shop_name", "Do'kon nomi"], ["show_order_number", "Chek raqami"],
+  ["show_date", "Sana va vaqt"], ["show_cashier", "Kassir"], ["show_customer", "Mijoz"],
+  ["show_item_price", "Tovar narxi (miqdor × narx)"], ["show_discount", "Chegirma"], ["show_payment", "To'lov turi"],
+  ["show_change", "Berilgan pul va qaytim"],
 ];
 
 async function viewReceiptSettings() {
   await loadSettings();
   const cfg = Object.assign({}, state.settings.receipt);
   const sample = {
-    id: 125, type: "dine_in", table_name: "Stol 4", hall_name: "Asosiy zal", status: "paid",
-    closed_at: new Date().toISOString().slice(0, 10) + " 14:35", waiter_name: "Aziz", cashier_name: state.user.full_name,
-    customer_name: "Ali Valiyev", payment_method: "cash",
-    items: [{ name: "Osh", qty: 2, price: 35000 }, { name: "Choy", qty: 1, price: 5000 }, { name: "Salat", qty: 1, price: 18000 }],
-    subtotal: 93000, service_percent: 10, service: 9300, discount: 2300, total: 100000, returned: 0,
+    id: 125, status: "paid", closed_at: new Date().toISOString().slice(0, 10) + " 14:35", cashier_name: state.user.full_name,
+    customer_name: "Ali Valiyev", payment_method: "cash", given: 100000,
+    items: [{ name: "Coca-Cola 1.5 l", qty: 2, price: 14000, unit: "dona" }, { name: "Non", qty: 3, price: 4000, unit: "dona" },
+      { name: "Olma", qty: 1.25, price: 18000, unit: "kg" }],
+    subtotal: 62500, discount: 2500, total: 60000, returned: 0,
   };
   const view = layout(`
     <div class="receipt-settings">
@@ -3154,21 +3182,23 @@ async function viewReceiptSettings() {
 
 const routes = [
   [/^#\/dashboard$/, viewDashboard, ["reports"]],
+  [/^#\/pos$/, viewPOS, ["cashier"]],
+  [/^#\/products$/, viewProducts, ["products"]],
+  [/^#\/stock$/, viewStock, ["warehouse"]],
+  [/^#\/stock\/moves$/, viewMoves, ["warehouse"]],
+  [/^#\/stock\/count$/, () => viewStockDoc("count"), ["warehouse"]],
+  [/^#\/stock\/writeoff$/, () => viewStockDoc("writeoff"), ["warehouse"]],
+  [/^#\/purchases$/, viewPurchases, ["warehouse"]],
+  [/^#\/purchases\/new$/, viewPurchaseNew, ["warehouse"]],
   [/^#\/crm\/customers$/, viewCustomers, ["crm"]],
   [/^#\/crm\/debts$/, viewDebts, ["crm"]],
   [/^#\/finance$/, viewFinanceCash, ["finance"]],
   [/^#\/finance\/entries$/, viewFinanceEntries, ["finance"]],
   [/^#\/finance\/types$/, viewFinanceTypes, ["finance"]],
   [/^#\/finance\/balances$/, viewBalances, ["finance"]],
-  [/^#\/tables$/, viewTables, ["tables"]],
-  [/^#\/order\/(\d+)$/, viewOrder, ["tables", "cashier", "reports"]],
-  [/^#\/kitchen$/, viewKitchen, ["kitchen"]],
-  [/^#\/printers$/, viewPrinters, ["printers"]],
   [/^#\/reports$/, viewReports, ["reports"]],
   [/^#\/reports\/sales$/, viewSales, ["reports"]],
   [/^#\/finance\/sales$/, viewSales, ["finance"]],
-  [/^#\/menu$/, viewMenu, ["menu"]],
-  [/^#\/tables-admin$/, viewTablesAdmin, ["halls"]],
   [/^#\/users$/, viewUsers, ["users"]],
   [/^#\/settings$/, viewSettings, ["settings"]],
   [/^#\/settings\/receipt$/, viewReceiptSettings, ["settings"]],
@@ -3222,4 +3252,4 @@ window.addEventListener("hashchange", router);
   router();
 })();
 
-window.__cafeposLoaded = true;
+window.__eproposLoaded = true;
