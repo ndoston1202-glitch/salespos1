@@ -69,6 +69,23 @@ Administratorning standart paroli: **1234** (Xodimlar bo'limida o'zgartiring).
 Qurilma kompyuter bilan bitta Wi-Fi'da bo'lsin. Manzil **Sozlamalar → Umumiy** sahifasida ko'rsatiladi
 (masalan `http://192.168.1.10:8100`). Ochilmasa — **TARMOQQA_RUXSAT.bat**.
 
+## 📱 Android ilova (APK)
+Yuklab olish: **[EproPos.apk](https://github.com/ndoston1202-glitch/salespos1/releases/download/android-latest/EproPos.apk)**
+
+- Ilova **telefonning o'zida to'liq ishlaydi** — internet ham, kompyuter ham shart emas
+  (barcha bo'limlar: kassa, ombor, mahsulotlar, mijozlar, moliya, hisobotlar)
+- Kompyuterdagi EproPos bilan ulash: telefonda **Sozlamalar → Sinxronlash** → *Kompyuterni qidirish* →
+  kompyuterdagi administrator paroli. Shundan keyin telefon kompyuter bilan **bitta Wi-Fi'da bo'lganda**
+  har 15 soniyada sotuvlar, tovarlar, qoldiqlar, mijozlar va boshqa ma'lumotlar o'zi almashadi
+- Wi-Fi yo'q paytda qilingan savdolar saqlanib turadi va keyin yuboriladi; ikkala joyda sotilgan tovar
+  qoldig'i to'g'ri qo'shib hisoblanadi
+- Telefonda ma'lumot bo'lmasa — hammasi kompyuterdan olinadi (kompyuterdagi parollar bilan kirasiz);
+  bo'lsa — ikkala baza birlashtiriladi
+- Kompyuterda: **Sozlamalar → Sinxronlash** — ulangan telefonlar ro'yxati (keraksizini uzish mumkin)
+- Chek Android chop etish oynasi orqali chiqariladi (Bluetooth/Wi-Fi printer yoki PDF)
+
+APK `android/` papkasidan GitHub Actions'da yig'iladi (Gradle + Chaquopy).
+
 ## 🛠️ Texnologiya
 - Backend: Python standart kutubxonasi (`http.server` + `sqlite3`) — `server.py`
 - Frontend: oddiy HTML/CSS/JavaScript — `static/`

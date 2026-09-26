@@ -8,8 +8,9 @@ plugins {
 def repoRoot = rootProject.projectDir.parentFile
 def generated = layout.buildDirectory.dir("epropos").get().asFile
 
-// Asosiy dastur fayllari (server.py, static/...) bitta joyda - android/ ga nusxa ko'chiriladi
-tasks.register("copyEproPos", Sync) {
+// Asosiy dastur fayllari (server.py, static/...) bitta joyda - yig'ishdan oldin shu yerga nusxalanadi
+// (konfiguratsiya paytida: Chaquopy vazifalari preBuild'dan oldin ham ishlaydi)
+sync {
     from(repoRoot) {
         include "server.py", "sync.py", "telegram.py", "xlsx.py"
         into "python"
@@ -19,7 +20,6 @@ tasks.register("copyEproPos", Sync) {
     }
     into generated
 }
-preBuild.dependsOn "copyEproPos"
 
 android {
     namespace "uz.epropos.app"
