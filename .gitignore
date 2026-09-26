@@ -1,14 +1,8 @@
-# Python
-venv/
+cafepos.db
+cafepos.db-*
 __pycache__/
 *.pyc
-
-# Database
-*.sqlite3
-
-# Media
-media/
-
-# OS
-.DS_Store
-Thumbs.db
+uploads/
+cafepos.pid
+cafepos.log
+android/build/
