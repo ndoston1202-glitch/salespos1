@@ -1,0 +1,3255 @@
+// EproPos - do'kon uchun savdo va ombor dasturi: interfeys (kutubxonasiz, oddiy JavaScript)
+"use strict";
+
+const state = { user: null, categories: [], products: [], settings: { shop_name: "EproPos", allow_negative: "0" } };
+
+const ROLE_NAMES = { admin: "Administrator", cashier: "Kassir", staff: "Xodim" };
+const METHOD_NAMES = { cash: "Naqd", card: "Karta", payme: "Payme", click: "Click", debt: "Nasiya" };
+// O'lchov birliklari (serverdagi UNITS bilan bir xil)
+const UNITS = { dona: "dona", kg: "kg", g: "gramm", l: "litr", m: "metr", qadoq: "qadoq", quti: "quti" };
+const FRACTION_UNITS = ["kg", "g", "l", "m"];
+
+// ------------------------------------------------------------ yordamchilar
+
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+
+// Eski Safari (iOS 12) uchun: "a ?? b" o'rniga
+function ifNull(value, fallback) {
+  return value === null || value === undefined ? fallback : value;
+}
+
+function esc(value) {
+  return String(ifNull(value, "")).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[c]);
+}
+
+function percent(n) {
+  return (+n || 0).toLocaleString("ru-RU").replace(",", ".") + "%";
+}
+
+function money(n) {
+  return Math.round(n || 0).toLocaleString("ru-RU").replace(/,/g, " ") + " so'm";
+}
+
+function today() {
+  const d = new Date();
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
+
+function time(s) {
+  return s ? s.slice(11, 16) : "";
+}
+
+// Hash o'zgarmasa ham sahifani qayta chizadi
+function go(hash) {
+  if (location.hash === hash) router();
+  else location.hash = hash;
+}
+
+// Miqdor: 2 -> "2", 1.255 -> "1.255"
+function fmtQty(q) {
+  return String(Math.round((+q || 0) * 1000) / 1000);
+}
+
+// Foydalanuvchida shu ruxsatlardan birortasi bormi
+function can(...perms) {
+  return !!state.user && perms.some((p) => state.user.permissions.includes(p));
+}
+
+let toastTimer;
+function toast(msg, isError = false) {
+  const el = $("#toast");
+  el.textContent = msg;
+  el.className = "show" + (isError ? " error" : "");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (el.className = ""), 2500);
+}
+
+async function api(method, url, body) {
+  const res = await fetch(url, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && url !== "/api/login") {
+    state.user = null;
+    renderLogin();
+    throw new Error(data.error || "Tizimga kiring");
+  }
+  if (!res.ok) throw new Error(data.error || "Xato: " + res.status);
+  return data;
+}
+
+// Xatoni foydalanuvchiga ko'rsatadigan o'ram
+// Xatoni ko'rsatadi va so'rov tugaguncha tugmani bloklaydi - ikki marta bosilsa ikki marta saqlanmaydi
+function safe(fn) {
+  return async (...args) => {
+    const e = args[0];
+    let btn = null;
+    if (e && e.type === "submit") {
+      btn = e.submitter || $("button:not([type=button])", e.target);
+    } else if (e && e.currentTarget && e.currentTarget.tagName === "BUTTON") {
+      btn = e.currentTarget;
+    }
+    if (btn) {
+      if (btn.dataset.busy) return;
+      btn.dataset.busy = "1";
+      btn.disabled = true;
+    }
+    try {
+      return await fn(...args);
+    } catch (err) {
+      toast(err.message, true);
+    } finally {
+      if (btn) {
+        delete btn.dataset.busy;
+        btn.disabled = false;
+      }
+    }
+  };
+}
+
+// ------------------------------------------------------------ modal
+
+function openModal(html, onMount) {
+  const root = $("#modal-root");
+  root.innerHTML = `<div class="modal-bg"><div class="modal">${html}</div></div>`;
+  const bg = $(".modal-bg", root);
+  bg.addEventListener("click", (e) => { if (e.target === bg) closeModal(); });
+  $$("[data-close]", root).forEach((b) => b.addEventListener("click", closeModal));
+  const first = $("input, select", root);
+  if (first) first.focus();
+  if (onMount) onMount($(".modal", root));
+}
+
+function closeModal() {
+  $("#modal-root").innerHTML = "";
+}
+
+// Rasmni kichraytirib JPEG data URL qiladi (server va tarmoqqa yengil bo'lsin)
+function resizeImage(file, maxSize) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const scale = Math.min(1, maxSize / Math.max(img.width, img.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(url);
+      resolve(canvas.toDataURL("image/jpeg", 0.85));
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("Rasmni o'qib bo'lmadi"));
+    };
+    img.src = url;
+  });
+}
+
+function formData(form) {
+  const data = {};
+  new FormData(form).forEach((value, key) => { data[key] = value; });
+  return data;
+}
+
+// ------------------------------------------------------------ login
+
+// ------------------------------------------------------------ telefonga ilova qilib o'rnatish
+
+let installPrompt = null;
+// Android ilova ichida ochilganmi (ilova window.EproPosApp ni beradi)
+const inAndroidApp = () => !!window.EproPosApp;
+const isStandalone = () => matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault();
+  installPrompt = e;
+  $$(".install-btn").forEach((b) => b.classList.remove("hidden"));
+});
+window.addEventListener("appinstalled", () => {
+  installPrompt = null;
+  $$(".install-btn").forEach((b) => b.classList.add("hidden"));
+  toast("EproPos ilova sifatida o'rnatildi ✅");
+});
+if ("serviceWorker" in navigator && window.isSecureContext) {
+  navigator.serviceWorker.register("/sw.js").catch(() => {});
+}
+
+function installButton(extraClass = "") {
+  if (inAndroidApp()) {
+    return `<button type="button" class="install-btn ${extraClass}" data-change-server>🔌 Server manzilini o'zgartirish</button>`;
+  }
+  if (isStandalone()) return "";
+  return `<button type="button" class="install-btn ${extraClass}" data-install>📲 Telefonga ilova qilib o'rnatish</button>`;
+}
+
+function bindInstallButtons(root = document) {
+  $$("[data-install]", root).forEach((b) => b.addEventListener("click", installApp));
+  $$("[data-change-server]", root).forEach((b) => b.addEventListener("click", () => window.EproPosApp.changeServer()));
+}
+
+async function installApp() {
+  if (installPrompt) {
+    installPrompt.prompt();
+    await installPrompt.userChoice.catch(() => {});
+    installPrompt = null;
+    return;
+  }
+  showInstallHelp();
+}
+
+function showInstallHelp() {
+  const origin = location.origin;
+  const android = `
+    <h3>🤖 Android (Chrome)</h3>
+    <ol>
+      <li>EproPos'ni <b>Chrome</b>'da oching: <code class="copyable">${esc(origin)}</code></li>
+      <li>O'ng yuqoridagi <b>⋮</b> menyu → <b>"Bosh ekranga qo'shish" / "Add to Home screen"</b></li>
+      <li>Bosh ekranda EproPos ikonkasi paydo bo'ladi</li>
+    </ol>`;
+  const ios = `
+    <h3>🍏 iPhone / iPad (Safari)</h3>
+    <ol>
+      <li>EproPos'ni <b>Safari</b>'da oching: <code>${esc(origin)}</code></li>
+      <li>Pastdagi <b>Ulashish</b> tugmasi (kvadrat va yuqoriga strelka)</li>
+      <li><b>"Na ekran «Domoy»" / "Add to Home Screen"</b> → <b>Qo'shish</b></li>
+    </ol>`;
+  openModal(`
+    <div class="modal-head"><h2>📲 Telefonga ilova qilib o'rnatish</h2>
+      <button type="button" class="icon-btn" data-close aria-label="Yopish">✕</button></div>
+    <div class="install-help">${isIOS() ? ios + android : android + ios}
+      <p class="muted">O'rnatilgach EproPos bosh ekrandan o'z ikonkasi bilan, brauzer paneli va Google logosisiz ochiladi.</p>
+    </div>
+    <div class="actions"><button class="btn primary" data-close>Tushunarli</button></div>`, (m) => {
+    $$(".copyable", m).forEach((c) => c.addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText(c.textContent); toast("Nusxa olindi"); } catch { /* ruxsat yo'q */ }
+    }));
+  });
+}
+
+const PIN_LENGTH = 4;
+
+function renderLogin() {
+  $("#app").innerHTML = `
+    <div class="auth">
+      <div class="auth-glow"></div>
+      <section class="auth-hero">
+        <img class="auth-hero-logo" src="/img/logo.png" alt="CafePos — ERP dasturi">
+        <h1>Do'koningiz nazorat ostida<br><span>doim va hamma joyda</span></h1>
+        <p>Kassa, ombor, mijozlar va moliyani yagona tizimda boshqaring</p>
+      </section>
+      <div class="pin-card" id="pin-card">
+        <h2>Xush kelibsiz</h2>
+        <p class="pin-sub">Parolingizni kiriting</p>
+        <div class="pin-dots" id="pin-dots">${"<i></i>".repeat(PIN_LENGTH)}</div>
+        <div class="pin-error" id="login-error"></div>
+        <div class="pin-pad">
+          ${[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => `<button type="button" data-digit="${n}">${n}</button>`).join("")}
+          <button type="button" class="pin-fn" data-clear aria-label="Tozalash">C</button>
+          <button type="button" data-digit="0">0</button>
+          <button type="button" class="pin-fn" data-back aria-label="O'chirish">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 5H9l-7 7 7 7h12a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1Z"/><path d="m17 9-6 6M11 9l6 6"/></svg></button>
+        </div>
+        ${installButton("auth-install")}
+      </div>
+    </div>`;
+  bindInstallButtons($("#app"));
+  // Kompyuterda karta chap tarafdagi blok (logo ... pastki yozuv) balandligida
+  const fit = () => {
+    const card = $("#pin-card");
+    if (!card) return window.removeEventListener("resize", fit);
+    const hero = $(".auth-hero");
+    const size = window.innerWidth > 760 ? Math.max(hero.offsetHeight, 340) : 0;
+    card.style.height = size ? size + "px" : "";
+    card.style.width = size ? Math.round(size * 0.78) + "px" : "";  // bo'yi - blok balandligida, eni torroq
+  };
+  window.addEventListener("resize", fit);
+  $(".auth-hero-logo").addEventListener("load", fit);  // logo yuklangach blok balandligi o'zgaradi
+  fit();
+
+  let pin = "";
+  let busy = false;
+  const dots = $("#pin-dots");
+  const draw = () => $$("i", dots).forEach((d, i) => d.classList.toggle("on", i < pin.length));
+  const press = async (key) => {
+    if (busy) return;
+    $("#login-error").textContent = "";
+    if (key === "back") pin = pin.slice(0, -1);
+    else if (key === "clear") pin = "";
+    else if (pin.length < PIN_LENGTH) pin += key;
+    draw();
+    if (pin.length < PIN_LENGTH) return;
+    busy = true;
+    try {
+      state.user = await api("POST", "/api/login", { pin });
+      await loadSettings();
+      document.removeEventListener("keydown", state.pinKeys);
+      if (!location.hash || location.hash === "#/") location.hash = defaultRoute();
+      router();
+    } catch (err) {
+      $("#login-error").textContent = err.message;
+      dots.classList.add("shake");
+      if (navigator.vibrate) navigator.vibrate(150);
+      setTimeout(() => { dots.classList.remove("shake"); pin = ""; draw(); busy = false; }, 450);
+    }
+  };
+  $$("[data-digit]").forEach((b) => b.addEventListener("click", () => press(b.dataset.digit)));
+  $("[data-back]").addEventListener("click", () => press("back"));
+  $("[data-clear]").addEventListener("click", () => press("clear"));
+  // Klaviatura bo'lsa - raqamlarni undan ham yozish mumkin
+  document.removeEventListener("keydown", state.pinKeys);
+  state.pinKeys = (e) => {
+    if (/^[0-9]$/.test(e.key)) press(e.key);
+    else if (e.key === "Backspace") press("back");
+    else if (e.key === "Escape") press("clear");
+  };
+  document.addEventListener("keydown", state.pinKeys);
+}
+
+async function logout() {
+  await api("POST", "/api/logout").catch(() => {});
+  state.user = null;
+  location.hash = "";
+  renderLogin();
+}
+
+// ------------------------------------------------------------ layout
+
+// Chiziqli ikonkalar (24x24, rang - currentColor)
+const ICONS = {
+  tables: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+  cashier: '<path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"/><path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"/>',
+  kitchen: '<path d="M17 21a1 1 0 0 0 1-1v-5.35c0-.46.32-.84.73-1.04a4 4 0 0 0-2.14-7.59 5 5 0 0 0-9.18 0 4 4 0 0 0-2.14 7.59c.41.2.73.58.73 1.04V20a1 1 0 0 0 1 1Z"/><path d="M6 17h12"/>',
+  reports: '<path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9M13 17V5M8 17v-3"/>',
+  menu: '<path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2M7 2v20"/><path d="M21 15V2a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7"/>',
+  halls: '<path d="M3 21h18M5 21V8l7-5 7 5v13"/><path d="M9 21v-6h6v6"/>',
+  printer: '<path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 9V3a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v6"/><rect x="6" y="14" width="12" height="8" rx="1"/>',
+  users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
+  settings: '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M2 14h4M10 8h4M18 16h4"/>',
+  logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5M21 12H9"/>',
+  burger: '<path d="M4 6h16M4 12h16M4 18h16"/>',
+  home: '<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1Z"/>',
+  sales: '<path d="M5 2v20l2.5-1.5L10 22l2-1.5 2 1.5 2.5-1.5L19 22V2l-2.5 1.5L14 2l-2 1.5L10 2 7.5 3.5Z"/><path d="M9 8h6M9 12h6M9 16h4"/>',
+  box: '<path d="M21 8 12 3 3 8v8l9 5 9-5Z"/><path d="m3 8 9 5 9-5M12 13v8"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 0 1-4 0v-.1A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 0 1 0-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/>',
+  chevron: '<path d="m9 6 6 6-6 6"/>',
+  card: '<rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/>',
+  cash: '<rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/>',
+  phone: '<rect x="6" y="2" width="12" height="20" rx="2"/><path d="M11 18h2"/>',
+  cancel: '<circle cx="12" cy="12" r="9"/><path d="m15 9-6 6M9 9l6 6"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
+  finance: '<circle cx="12" cy="12" r="9"/><path d="M15 9.5c-.5-1-1.6-1.5-3-1.5-1.7 0-3 .9-3 2s1.3 1.8 3 2 3 .9 3 2-1.3 2-3 2c-1.4 0-2.5-.5-3-1.5M12 6v2M12 16v2"/>',
+  list: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
+  crm: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/>',
+  debt: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z"/><path d="M14 3v6h6M9 14h6M9 18h4"/>',
+  bank: '<path d="M3 21h18M4 10h16M5 10v8M9.5 10v8M14.5 10v8M19 10v8M12 3 3 8h18Z"/>',
+  terminal: '<rect x="5" y="2" width="14" height="20" rx="2"/><path d="M8 6h8v4H8zM8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01M16 18h.01"/>',
+  transfer: '<path d="M4 7h14l-3-3M20 17H6l3 3"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+  upload: '<path d="M12 16V4M6 10l6-6 6 6M4 20h16"/>',
+  download: '<path d="M12 4v12M6 10l6 6 6-6M4 20h16"/>',
+  scale: '<path d="M12 3v18M5 7h14M5 7l-3 7a4 4 0 0 0 6 0Zm14 0-3 7a4 4 0 0 0 6 0ZM8 21h8"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  in: '<path d="M12 5v14M5 12l7 7 7-7"/>',
+  out: '<path d="M12 19V5M5 12l7-7 7 7"/>',
+  collapse: '<path d="m11 17-5-5 5-5M18 17l-5-5 5-5"/>',
+  expand: '<path d="m6 17 5-5-5-5M13 17l5-5-5-5"/>',
+  barcode: '<path d="M3 5v14M7 5v14M10 5v14M14 5v14M17 5v14M21 5v14"/>',
+  warehouse: '<path d="M3 21V8l9-5 9 5v13"/><path d="M7 21v-8h10v8M7 17h10"/>',
+  journal: '<path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/><path d="M9 7h7M9 11h5"/>',
+  plug: '<path d="M9 2v6M15 2v6M6 8h12v4a6 6 0 0 1-12 0Z"/><path d="M12 18v4"/>',
+  telegram: '<path d="m22 3-9.5 18-3-7.5L2 10.5Z"/><path d="m9.5 13.5 5-5"/>',
+};
+
+function icon(name) {
+  return `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+    stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
+}
+
+// Chap menyu: bo'lim {perm, href, icon, name} yoki guruh {icon, name, children}
+const NAV = [
+  { perm: "reports", href: "#/dashboard", icon: "home", name: "Bosh sahifa" },
+  { perm: "cashier", href: "#/pos", icon: "cashier", name: "Kassa" },
+  { perm: "products", href: "#/products", icon: "box", name: "Mahsulotlar" },
+  { id: "warehouse", icon: "warehouse", name: "Ombor", children: [
+    { perm: "warehouse", href: "#/stock", icon: "list", name: "Qoldiqlar" },
+    { perm: "warehouse", href: "#/purchases", icon: "in", name: "Kirim" },
+    { perm: "warehouse", href: "#/stock/count", icon: "check", name: "Inventarizatsiya" },
+    { perm: "warehouse", href: "#/stock/writeoff", icon: "out", name: "Hisobdan chiqarish" },
+    { perm: "warehouse", href: "#/stock/moves", icon: "transfer", name: "Harakatlar" },
+  ] },
+  { id: "crm", icon: "crm", name: "CRM", children: [
+    { perm: "crm", href: "#/crm/customers", icon: "users", name: "Mijozlar" },
+    { perm: "crm", href: "#/crm/debts", icon: "debt", name: "Nasiyalar" },
+  ] },
+  { id: "reports", icon: "reports", name: "Hisobotlar", children: [
+    { perm: "reports", href: "#/reports", icon: "reports", name: "Hisobot" },
+    { perm: "reports", href: "#/reports/sales", icon: "sales", name: "Savdolar" },
+  ] },
+  { id: "finance", icon: "finance", name: "Moliya", children: [
+    { perm: "finance", href: "#/finance", icon: "cashier", name: "Kassa balansi" },
+    { perm: "finance", href: "#/finance/entries", icon: "list", name: "Tranzaksiyalar" },
+    { perm: "finance", href: "#/finance/sales", icon: "sales", name: "Savdolar" },
+    { perm: "finance", href: "#/finance/types", icon: "plus", name: "Tranzaksiya yaratish" },
+    { perm: "finance", href: "#/finance/balances", icon: "scale", name: "Balansni o'rnatish" },
+  ] },
+  { perm: "users", href: "#/users", icon: "users", name: "Xodimlar" },
+  { perm: "journal", href: "#/journal", icon: "journal", name: "Jurnal" },
+  { perm: "integrations", href: "#/integrations", icon: "plug", name: "Integratsiyalar" },
+];
+// Sozlamalar alohida: yuqori o'ngdagi tugma, ichida yorliqlar
+const SETTINGS_TABS = [
+  { perm: "settings", href: "#/settings", icon: "settings", name: "Umumiy" },
+  { perm: "settings", href: "#/settings/receipt", icon: "sales", name: "Chek" },
+];
+
+function visibleNav() {
+  return NAV.map((item) => item.children
+    ? Object.assign({}, item, { children: item.children.filter((c) => can(c.perm)) })
+    : item)
+    .filter((item) => item.children ? item.children.length : can(item.perm));
+}
+
+function visibleSettingsTabs() {
+  return SETTINGS_TABS.filter((t) => can(t.perm));
+}
+
+function defaultRoute() {
+  for (const item of visibleNav()) return item.children ? item.children[0].href : item.href;
+  const tabs = visibleSettingsTabs();
+  return tabs.length ? tabs[0].href : "#/none";
+}
+
+// Yuqori paneldagi sarlavha: "Ombor › Kirim"
+function pageTrail(hash) {
+  if (hash === "#/purchases/new") return ["Ombor", "Yangi kirim"];
+  if (hash === "#/integrations/telegram") return ["Integratsiyalar", "Telegram bot"];
+  if (hash === "#/integrations/customer-bot") return ["Integratsiyalar", "Mijozlar boti"];
+  for (const item of NAV) {
+    if (item.href === hash) return [item.name];
+    for (const c of item.children || []) if (c.href === hash) return [item.name, c.name];
+  }
+  const tab = SETTINGS_TABS.find((t) => t.href === hash);
+  return tab ? ["Sozlamalar", tab.name] : ["EproPos"];
+}
+
+function openGroups() {
+  try { return JSON.parse(localStorage.getItem("nav-groups") || "{}"); } catch { return {}; }
+}
+
+function layout(content) {
+  const hash = location.hash.split("?")[0];
+  const isActive = (href) => hash === href || (href === "#/tables" && hash.startsWith("#/order/"))
+    || (href === "#/integrations" && hash.startsWith("#/integrations/"));
+  const initials = state.user.full_name.split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase();
+  const saved = openGroups();
+  const link = (item, sub) => `
+    <a href="${item.href}" class="${isActive(item.href) ? "active" : ""} ${sub ? "sub" : ""}" title="${item.name}">
+      ${icon(item.icon)}<span>${item.name}</span>
+    </a>`;
+  const nav = visibleNav().map((item) => {
+    if (!item.children) return link(item);
+    const hasActive = item.children.some((c) => isActive(c.href));
+    const open = hasActive || saved[item.id] !== false;
+    return `
+      <div class="nav-group-box ${open ? "open" : ""} ${hasActive ? "has-active" : ""}" data-group="${item.id}">
+        <button type="button" class="nav-parent" title="${item.name}" data-first="${item.children[0].href}">
+          ${icon(item.icon)}<span>${item.name}</span><i class="chev">${icon("chevron")}</i>
+        </button>
+        <div class="nav-children">${item.children.map((c) => link(c, true)).join("")}</div>
+      </div>`;
+  }).join("");
+  const tabs = visibleSettingsTabs();
+  const inSettings = tabs.some((t) => t.href === hash);
+  const trail = pageTrail(hash);
+
+  $("#app").innerHTML = `
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <img class="brand-full" src="/img/logo.png" alt="EproPos">
+          <img class="brand-icon" src="/img/logo-icon.png" alt="EproPos">
+          <button class="side-toggle" id="side-toggle"></button>
+        </div>
+        ${state.settings.shop_name && state.settings.shop_name !== "EproPos"
+          ? `<div class="cafe-name">${esc(state.settings.shop_name)}</div>` : ""}
+        <nav class="side-nav">${nav}</nav>
+        ${installButton("side-install")}
+      </aside>
+      <div class="side-backdrop" id="side-backdrop"></div>
+      <div class="content">
+        <header class="topbar">
+          <button class="burger" id="burger" aria-label="Menyu">${icon("burger")}</button>
+          <div class="crumbs">${trail.map((t, i) => i < trail.length - 1
+            ? `<span class="muted">${esc(t)}</span><i class="chev">${icon("chevron")}</i>` : `<b>${esc(t)}</b>`).join("")}</div>
+          <div class="top-actions">
+            ${tabs.length ? `<a href="${tabs[0].href}" class="top-btn ${inSettings ? "active" : ""}" title="Sozlamalar">
+              ${icon("gear")}<span>Sozlamalar</span></a>` : ""}
+            <div class="top-user">
+              <div class="avatar">${esc(initials)}</div>
+              <div class="who"><b>${esc(state.user.full_name)}</b><small>${ROLE_NAMES[state.user.role]}</small></div>
+              <button class="logout" id="logout-btn" title="Chiqish">${icon("logout")}</button>
+            </div>
+          </div>
+        </header>
+        <main id="view">
+          ${inSettings ? `<nav class="settings-tabs">${tabs.map((t) => `
+            <a href="${t.href}" class="${t.href === hash ? "active" : ""}">${icon(t.icon)}<span>${t.name}</span></a>`).join("")}</nav>` : ""}
+          ${content}
+        </main>
+      </div>
+    </div>`;
+
+  $("#logout-btn").addEventListener("click", logout);
+  bindInstallButtons($("#app"));
+  $$(".nav-parent").forEach((b) => b.addEventListener("click", () => {
+    // Yig'ilgan panelda guruh bosilsa - birinchi bo'limiga o'tamiz
+    if (document.body.classList.contains("side-collapsed") && window.innerWidth > 760) {
+      location.hash = b.dataset.first;
+      return;
+    }
+    const box = b.parentElement;
+    box.classList.toggle("open");
+    const groups = openGroups();
+    groups[box.dataset.group] = box.classList.contains("open");
+    try { localStorage.setItem("nav-groups", JSON.stringify(groups)); } catch { /* ruxsat yo'q */ }
+  }));
+  const toggle = $("#side-toggle");
+  const syncToggle = () => {
+    const collapsed = document.body.classList.contains("side-collapsed");
+    toggle.innerHTML = icon(collapsed ? "expand" : "collapse");
+    toggle.title = collapsed ? "Menyuni ochish" : "Menyuni yig'ish";
+  };
+  toggle.addEventListener("click", () => {
+    const collapsed = document.body.classList.toggle("side-collapsed");
+    try { localStorage.setItem("side-collapsed", collapsed ? "1" : "0"); } catch { /* ruxsat yo'q */ }
+    syncToggle();
+  });
+  syncToggle();
+  $("#burger").addEventListener("click", () => document.body.classList.toggle("nav-open"));
+  $("#side-backdrop").addEventListener("click", () => document.body.classList.remove("nav-open"));
+  document.body.classList.remove("nav-open");
+  return $("#view");
+}
+
+async function loadSettings() {
+  try {
+    state.settings = await api("GET", "/api/settings");
+  } catch { /* standart sozlamalar qoladi */ }
+}
+
+async function loadMenu() {
+  [state.categories, state.products] = await Promise.all([
+    api("GET", "/api/categories"),
+    api("GET", "/api/products"),
+  ]);
+}
+
+// ------------------------------------------------------------ kassa (sotuv)
+// Savat brauzerda yig'iladi (sahifa yangilansa ham saqlanadi), to'lovda bitta so'rov bilan yuboriladi.
+
+function loadCart() {
+  try { return JSON.parse(localStorage.getItem("pos-cart") || "[]"); } catch { return []; }
+}
+
+function saveCart(cart) {
+  try { localStorage.setItem("pos-cart", JSON.stringify(cart)); } catch { /* ruxsat yo'q */ }
+}
+
+const isWeight = (p) => FRACTION_UNITS.indexOf(p.unit) >= 0;
+
+// Tarozidagi tovar (kg, l, m) - miqdor so'raladi
+function qtyModal(p, current, onDone) {
+  openModal(`
+    <form id="qf" class="qty-form">
+      <div class="modal-head"><h2>${esc(p.name)}</h2><button type="button" class="icon-btn" data-close>✕</button></div>
+      <p class="muted">${money(p.price)} / ${UNITS[p.unit]} · omborda ${fmtQty(p.stock)} ${UNITS[p.unit]}</p>
+      <label><span>Miqdori (${UNITS[p.unit]})</span>
+        <input name="qty" type="number" step="0.001" min="0.001" inputmode="decimal" value="${ifNull(current, 1)}" required></label>
+      <div class="qty-sum" id="qsum"></div>
+      <div class="actions"><button type="button" class="btn" data-close>Bekor</button><button class="btn primary">Qo'shish</button></div>
+    </form>`, (m) => {
+    const input = $("input[name=qty]", m);
+    const sum = () => { $("#qsum", m).textContent = "Summa: " + money(p.price * (+input.value || 0)); };
+    input.select();
+    input.addEventListener("input", sum);
+    sum();
+    $("#qf", m).addEventListener("submit", (e) => {
+      e.preventDefault();
+      const q = Math.round(+input.value * 1000) / 1000;
+      if (!(q > 0)) return toast("Miqdorni kiriting", true);
+      closeModal();
+      onDone(q);
+    });
+  });
+}
+
+async function viewPOS() {
+  await loadMenu();
+  let cart = loadCart().filter((l) => state.products.some((p) => p.id === l.id));
+  let discount = 0;
+  let customer = null;
+  let category = "";
+  const view = layout(`
+    <div class="pos">
+      <section class="pos-left">
+        <form class="pos-search" id="pos-search" autocomplete="off">
+          ${icon("barcode")}<input id="scan" placeholder="Shtrix-kodni skanerlang yoki tovar nomini yozing" autocomplete="off">
+        </form>
+        <div class="chips" id="cats"></div>
+        <div class="pos-grid" id="grid"></div>
+      </section>
+      <aside class="pos-cart panel">
+        <div class="cart-head"><h3>Savat</h3><button class="btn small" id="clear">Tozalash</button></div>
+        <div class="cart-lines" id="lines"></div>
+        <div class="cart-foot">
+          <div class="cart-customer" id="cust"></div>
+          <div class="cart-row"><span>Tovarlar</span><b id="sub"></b></div>
+          <label class="cart-row"><span>Chegirma</span><input id="disc" type="number" min="0" inputmode="numeric" placeholder="0"></label>
+          <div class="cart-row grand"><span>Jami</span><b id="total"></b></div>
+          <button class="btn primary big" id="pay">💰 To'lash <small>F2</small></button>
+        </div>
+      </aside>
+      <button type="button" class="cart-fab" id="cart-fab"></button>
+    </div>`);
+  const scan = $("#scan", view);
+  const subtotal = () => cart.reduce((s, l) => s + Math.round(l.price * l.qty), 0);
+  const productById = (id) => state.products.find((p) => p.id === id);
+
+  const add = (p, qty) => {
+    const line = cart.find((l) => l.id === p.id);
+    const inCart = line ? line.qty : 0;
+    if (state.settings.allow_negative !== "1" && inCart + qty > p.stock + 1e-9) {
+      toast(`Omborda yetarli emas: ${p.name} — qoldiq ${fmtQty(p.stock)} ${UNITS[p.unit]}`, true);
+      return;
+    }
+    if (line) line.qty = Math.round((line.qty + qty) * 1000) / 1000;
+    else cart.unshift({ id: p.id, name: p.name, price: p.price, unit: p.unit, qty });
+    renderCart(p.id);
+  };
+  const pick = (p) => {
+    if (isWeight(p)) qtyModal(p, 1, (q) => add(p, q));
+    else add(p, 1);
+  };
+
+  const renderCats = () => {
+    $("#cats", view).innerHTML = [["", "Hammasi"]].concat(state.categories.map((c) => [String(c.id), c.name]))
+      .map(([id, name]) => `<button type="button" class="chip ${id === category ? "active" : ""}" data-cat="${id}">${esc(name)}</button>`).join("");
+    $$("[data-cat]", view).forEach((b) => b.addEventListener("click", () => { category = b.dataset.cat; renderCats(); renderGrid(); }));
+  };
+  const renderGrid = () => {
+    const q = scan.value.trim().toLowerCase();
+    const list = state.products.filter((p) => (!category || String(p.category_id) === category)
+      && (!q || p.name.toLowerCase().indexOf(q) >= 0 || (p.barcode || "").indexOf(q) === 0));
+    $("#grid", view).innerHTML = list.slice(0, 200).map((p) => `
+      <button type="button" class="pos-card ${p.stock <= 0 ? "empty" : ""}" data-id="${p.id}">
+        ${p.image ? `<img src="/uploads/${encodeURIComponent(p.image)}" alt="">` : ""}
+        <b>${esc(p.name)}</b>
+        <span class="price">${money(p.price)}${isWeight(p) ? `<small>/${UNITS[p.unit]}</small>` : ""}</span>
+        <span class="stock ${p.stock <= 0 ? "out" : p.stock <= p.min_stock ? "low" : ""}">${fmtQty(p.stock)} ${UNITS[p.unit]}</span>
+      </button>`).join("") || `<p class="muted">Tovar topilmadi</p>`;
+    $$("#grid [data-id]", view).forEach((b) => b.addEventListener("click", () => pick(productById(+b.dataset.id))));
+  };
+  const renderCart = (flashId) => {
+    saveCart(cart);
+    $("#lines", view).innerHTML = cart.map((l, i) => `
+      <div class="cart-line ${l.id === flashId ? "flash" : ""}">
+        <div class="cl-name"><b>${esc(l.name)}</b><small class="muted">${money(l.price)}${isWeight(l) ? " / " + UNITS[l.unit] : ""}</small></div>
+        <div class="qty">
+          <button type="button" data-minus="${i}">−</button>
+          <input data-qty="${i}" value="${fmtQty(l.qty)}" inputmode="decimal">
+          <button type="button" data-plus="${i}">+</button>
+        </div>
+        <b class="cl-sum">${money(l.price * l.qty)}</b>
+        <button type="button" class="icon-btn" data-rm="${i}" title="Olib tashlash">✕</button>
+      </div>`).join("") || `<div class="cart-empty">${icon("barcode")}<p>Tovarni skanerlang yoki chapdan tanlang</p></div>`;
+    const sub = subtotal();
+    discount = Math.min(+$("#disc", view).value || 0, sub);
+    $("#sub", view).textContent = money(sub);
+    $("#total", view).textContent = money(sub - discount);
+    $("#pay", view).disabled = !cart.length;
+    const fab = $("#cart-fab", view);
+    fab.innerHTML = `🛒 Savat · ${cart.length} ta · <b>${money(sub - discount)}</b>`;
+    fab.classList.toggle("hidden", !cart.length);
+    const setQty = (i, q) => {
+      const l = cart[i];
+      const p = productById(l.id);
+      if (!(q > 0)) { cart.splice(i, 1); return renderCart(); }
+      q = isWeight(l) ? Math.round(q * 1000) / 1000 : Math.round(q);
+      if (p && state.settings.allow_negative !== "1" && q > p.stock + 1e-9) {
+        toast(`Omborda yetarli emas — qoldiq ${fmtQty(p.stock)} ${UNITS[p.unit]}`, true);
+        q = Math.max(Math.floor(p.stock * 1000) / 1000, 0);
+        if (!q) { cart.splice(i, 1); return renderCart(); }
+      }
+      l.qty = q;
+      renderCart();
+    };
+    $$("[data-minus]", view).forEach((b) => b.addEventListener("click", () => setQty(+b.dataset.minus, cart[+b.dataset.minus].qty - 1)));
+    $$("[data-plus]", view).forEach((b) => b.addEventListener("click", () => setQty(+b.dataset.plus, cart[+b.dataset.plus].qty + 1)));
+    $$("[data-rm]", view).forEach((b) => b.addEventListener("click", () => { cart.splice(+b.dataset.rm, 1); renderCart(); }));
+    $$("[data-qty]", view).forEach((inp) => inp.addEventListener("change", () => setQty(+inp.dataset.qty, +inp.value.replace(",", "."))));
+  };
+  const renderCustomer = () => {
+    $("#cust", view).innerHTML = customer
+      ? `<span>${icon("crm")} <b>${esc(customer.name)}</b> ${customer.telegram_chat_id ? `<span class="tg-mark">${icon("telegram")}</span>` : ""}</span>
+         <button type="button" class="icon-btn" id="cust-x">✕</button>`
+      : `<button type="button" class="btn small" id="cust-pick">${icon("crm")} Mijoz tanlash</button>`;
+    const x = $("#cust-x", view);
+    if (x) x.addEventListener("click", () => { customer = null; renderCustomer(); });
+    const pickBtn = $("#cust-pick", view);
+    if (pickBtn) pickBtn.addEventListener("click", () => openModal(`
+      <div class="modal-head"><h2>Mijoz</h2><button type="button" class="icon-btn" data-close>✕</button></div>
+      <div id="picker"></div>`, (m) => customerPicker($("#picker", m), (c) => {
+      if (c) { customer = c; closeModal(); renderCustomer(); }
+    })));
+  };
+
+  const clearSale = () => {
+    cart = [];
+    customer = null;
+    $("#disc", view).value = "";
+    scan.value = "";
+    renderCart();
+    renderCustomer();
+    renderGrid();
+    scan.focus();
+  };
+  const pay = () => {
+    if (!cart.length) return;
+    posPayModal({ cart, discount, customer, total: subtotal() - discount }, async (sale, given) => {
+      clearSale();
+      await loadMenu();
+      renderGrid();
+      if (sale.print) printReceipt(Object.assign({}, sale, { given }));
+    }, (c) => { customer = c; renderCustomer(); });
+  };
+
+  // Skaner: kodni yozib Enter bosadi. Aniq shtrix-kod bo'lsa - savatga, aks holda nom bo'yicha qidiruv
+  $("#pos-search", view).addEventListener("submit", (e) => {
+    e.preventDefault();
+    const q = scan.value.trim();
+    if (!q) return;
+    const byCode = state.products.find((p) => p.barcode === q);
+    const byName = state.products.filter((p) => p.name.toLowerCase().indexOf(q.toLowerCase()) >= 0);
+    const p = byCode || (byName.length === 1 ? byName[0] : null);
+    if (p) {
+      pick(p);
+      scan.value = "";
+      renderGrid();
+    } else if (/^\d{6,}$/.test(q)) {
+      toast(`${q} shtrix-kodli tovar topilmadi`, true);
+      if (navigator.vibrate) navigator.vibrate(200);
+      scan.select();
+    }
+  });
+  scan.addEventListener("input", renderGrid);
+  $("#disc", view).addEventListener("input", () => renderCart());
+  $("#clear", view).addEventListener("click", () => { if (!cart.length || confirm("Savat tozalansinmi?")) clearSale(); });
+  $("#pay", view).addEventListener("click", pay);
+  $("#cart-fab", view).addEventListener("click", () => $(".pos-cart", view).scrollIntoView({ behavior: "smooth" }));
+
+  // Diqqat boshqa joyda bo'lsa ham skaner o'qigan raqamlar qidiruv maydoniga tushadi
+  const keys = (e) => {
+    if (!document.body.contains(scan)) return document.removeEventListener("keydown", keys);
+    if ($("#modal-root").innerHTML) return;
+    if (e.key === "F2") { e.preventDefault(); pay(); return; }
+    const t = e.target;
+    const typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT");
+    if (!typing && e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+      scan.focus();
+    }
+  };
+  document.addEventListener("keydown", keys);
+  state.leaveHook = () => document.removeEventListener("keydown", keys);
+
+  renderCats();
+  renderGrid();
+  renderCart();
+  renderCustomer();
+  scan.focus();
+}
+
+function posPayModal(sale, onPaid, onCustomer) {
+  let method = "cash";
+  let customer = sale.customer;
+  openModal(`
+    <div class="pay-modal">
+      <div class="modal-head"><h2>To'lov</h2><button type="button" class="icon-btn" data-close>✕</button></div>
+      <div class="pay-total"><span>To'lanadi</span><b>${money(sale.total)}</b></div>
+      <div class="pay-methods">
+        ${Object.keys(METHOD_NAMES).map((k) =>
+          `<button type="button" class="btn ${k === method ? "active" : ""}" data-method="${k}">${METHOD_NAMES[k]}</button>`).join("")}
+      </div>
+      <label id="cash-box"><span>Mijoz bergan pul</span><input id="given" type="number" min="0" inputmode="numeric" placeholder="Qaytim hisoblash uchun"></label>
+      <div class="change" id="change"></div>
+      <span class="field-label" id="customer-label"></span>
+      <div id="customer-picker"></div>
+      <div class="muted small-note hidden" id="tg-note">📨 Chek mijozning Telegram'iga yuboriladi</div>
+      <div id="debt-box" class="hidden">
+        <label><span>To'lov muddati</span><input id="due-date" type="date" value="${dateAfter(7)}"></label>
+      </div>
+      <label class="check-line"><input type="checkbox" id="print-after" checked> Chek chiqarish</label>
+      <div class="actions">
+        <button class="btn" data-close>Bekor</button>
+        <button class="btn primary" id="confirm-pay">Tasdiqlash <small>Enter</small></button>
+      </div>
+    </div>`, (modal) => {
+    const update = () => {
+      $("#cash-box", modal).classList.toggle("hidden", method !== "cash");
+      $("#debt-box", modal).classList.toggle("hidden", method !== "debt");
+      $("#customer-label", modal).innerHTML = method === "debt" ? "Mijoz <b>(nasiyaga yoziladi)</b>" : "Mijoz <i>(ixtiyoriy)</i>";
+      $("#tg-note", modal).classList.toggle("hidden", !(customer && customer.telegram_chat_id));
+      const given = +$("#given", modal).value || 0;
+      $("#change", modal).textContent = method === "cash" && given
+        ? (given >= sale.total ? "Qaytim: " + money(given - sale.total) : "Yetmaydi: " + money(sale.total - given)) : "";
+    };
+    $$("[data-method]", modal).forEach((b) => b.addEventListener("click", () => {
+      method = b.dataset.method;
+      $$("[data-method]", modal).forEach((x) => x.classList.toggle("active", x === b));
+      update();
+    }));
+    $("#given", modal).addEventListener("input", update);
+    customerPicker($("#customer-picker", modal), (c) => { customer = c; onCustomer(c); update(); }, customer);
+    const confirmBtn = $("#confirm-pay", modal);
+    confirmBtn.addEventListener("click", safe(async (e) => {
+      if (method === "debt" && !customer) throw new Error("Nasiyaga yozish uchun mijozni tanlang");
+      const given = +$("#given", modal).value || 0;
+      if (method === "cash" && given && given < sale.total) throw new Error("Berilgan pul yetmaydi");
+      const body = { method, discount: sale.discount, items: sale.cart.map((l) => ({ product_id: l.id, qty: l.qty })) };
+      if (customer) body.customer_id = customer.id;
+      if (method === "debt") body.due_date = $("#due-date", modal).value;
+      const paid = await api("POST", "/api/sales", body);
+      paid.print = $("#print-after", modal).checked;
+      closeModal();
+      toast(`Sotildi ✅ ${method === "cash" && given > paid.total ? "Qaytim: " + money(given - paid.total) : ""}`
+        + (paid.customer_notified ? " · chek Telegram'ga yuborildi" : ""));
+      onPaid(paid, method === "cash" ? given : 0);
+    }));
+    modal.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && e.target.tagName !== "BUTTON" && !e.target.closest(".picker")) { e.preventDefault(); confirmBtn.click(); }
+    });
+    update();
+    $("#given", modal).focus();
+  });
+}
+
+
+// Chek ko'rinishi - Sozlamalar > Chek bo'limidagi belgilarga qarab
+function receiptHtml(order, cfg) {
+  cfg = cfg || state.settings.receipt || {};
+  const row = (label, value, bold) => `<tr><td>${bold ? `<b>${label}</b>` : label}</td>
+    <td style="text-align:right">${bold ? `<b>${value}</b>` : value}</td></tr>`;
+  const lines = (text) => esc(text).split("\n").map((l) => `<div class="c">${l}</div>`).join("");
+  const info = cfg.show_order_number ? `Chek #${order.id}` : "";
+  return `
+    ${cfg.show_logo ? `<div class="c"><img class="r-logo" src="/img/logo.png" alt=""></div>` : ""}
+    ${cfg.show_shop_name ? `<h3>${esc(state.settings.shop_name)}</h3>` : ""}
+    ${cfg.header_text ? lines(cfg.header_text) : ""}
+    ${info ? `<div class="c">${info}</div>` : ""}
+    ${cfg.show_date ? `<div class="c">${esc((order.closed_at || order.created_at || "").slice(0, 16))}</div>` : ""}
+    ${cfg.show_cashier && order.cashier_name ? `<div>Kassir: ${esc(order.cashier_name)}</div>` : ""}
+    ${cfg.show_customer && order.customer_name ? `<div>Mijoz: ${esc(order.customer_name)}</div>` : ""}
+    <hr>
+    <table>
+      ${order.items.map((i) => cfg.show_item_price ? `
+        <tr><td colspan="2">${esc(i.name)}</td></tr>
+        ${row(`${fmtQty(i.qty)} ${UNITS[i.unit] || ""} x ${money(i.price)}`, money(i.qty * i.price))}`
+        : row(`${esc(i.name)} x${fmtQty(i.qty)}`, money(i.qty * i.price))).join("")}
+      ${order.items.filter((i) => i.returned_qty).map((i) => `<tr><td colspan="2">  ${esc(i.name)}: ${fmtQty(i.returned_qty)} ${UNITS[i.unit] || ""} qaytarildi</td></tr>`).join("")}
+    </table>
+    <hr>
+    <table>
+      ${cfg.show_discount && order.discount ? row("Summa", money(order.subtotal)) : ""}
+      ${cfg.show_discount && order.discount ? row("Chegirma", "-" + money(order.discount)) : ""}
+      ${row("JAMI", money(order.total), true)}
+      ${order.returned ? row("Qaytarildi", "-" + money(order.returned)) + row("YAKUNIY", money(order.total - order.returned), true) : ""}
+      ${cfg.show_payment && order.payment_method ? row("To'lov", METHOD_NAMES[order.payment_method] || "") : ""}
+      ${cfg.show_change && order.given ? row("Berildi", money(order.given)) + row("Qaytim", money(order.given - order.total)) : ""}
+    </table>
+    <hr>
+    ${order.status === "refunded" ? `<div class="c"><b>BEKOR QILINGAN CHEK</b></div>`
+      : order.status === "open" ? `<div class="c">Hisob (to'lanmagan)</div>` : ""}
+    ${cfg.footer_text && order.status !== "refunded" ? lines(cfg.footer_text) : ""}`;
+}
+
+function printReceipt(order) {
+  const cfg = state.settings.receipt || {};
+  const area = $("#print-area");
+  area.className = cfg.paper_width === 58 ? "paper-58" : "";
+  area.innerHTML = receiptHtml(order, cfg);
+  const img = $("img", area);
+  if (img && !img.complete) img.onload = img.onerror = () => window.print();
+  else window.print();
+}
+
+
+// ------------------------------------------------------------ savdolar (barcha cheklar)
+
+const SALE_STATUS = { paid: ["ok", "Sotilgan"], refunded: ["off", "Bekor qilingan"] };
+
+function saleStatusBadge(s) {
+  if (s.status === "paid" && s.returned > 0) return `<span class="badge warn">Qisman qaytarilgan</span>`;
+  const [cls, name] = SALE_STATUS[s.status] || ["", s.status];
+  return `<span class="badge ${cls}">${name}</span>`;
+}
+
+async function saleModal(id, onChange) {
+  const s = await api("GET", `/api/sales/${id}`);
+  const net = s.total - s.returned;
+  const itemsHtml = (returnMode) => s.items.map((i) => {
+    const left = Math.round((i.qty - i.returned_qty) * 1000) / 1000;
+    const u = UNITS[i.unit] || "";
+    return `
+      <tr class="${left === 0 ? "cancelled" : ""}">
+        <td>${esc(i.name)}${i.returned_qty ? `<small class="amount-out"> · ${fmtQty(i.returned_qty)} ${u} qaytarilgan</small>` : ""}</td>
+        <td class="right nowrap">${fmtQty(i.qty)} ${u} × ${money(i.price)}</td>
+        <td class="right nowrap">${money(i.qty * i.price)}</td>
+        ${returnMode ? `<td class="right">${left ? `<input type="number" class="ret-qty" data-item="${i.id}" data-price="${i.price}"
+          min="0" max="${left}" step="${FRACTION_UNITS.indexOf(i.unit) >= 0 ? "0.001" : "1"}" value="0" style="width:80px">` : ""}</td>` : ""}
+      </tr>`;
+  }).join("");
+  const render = (returnMode) => `
+    <div class="sale-receipt">
+      <div class="modal-head"><h2>Chek #${s.id} ${saleStatusBadge(s)}</h2>
+        <button type="button" class="icon-btn" data-close>✕</button></div>
+      <div class="jd-meta">
+        <div><small>Vaqti</small><b>${esc(s.closed_at || "")}</b></div>
+        <div><small>Kassir</small><b>${esc(s.cashier_name || "—")}</b></div>
+        <div><small>Mijoz</small><b>${esc(s.customer_name || "—")}</b>${s.customer_phone ? `<span class="muted">${esc(formatPhone(s.customer_phone))}</span>` : ""}</div>
+      </div>
+      <table class="list sale-items">
+        <thead><tr><th>Tovar</th><th class="right">Miqdor × narx</th><th class="right">Summa</th>${returnMode ? `<th class="right">Qaytarish</th>` : ""}</tr></thead>
+        <tbody>${itemsHtml(returnMode)}</tbody>
+      </table>
+      <div class="sale-totals">
+        ${s.discount ? `<div><span>Tovarlar</span><b>${money(s.subtotal)}</b></div>` : ""}
+        ${s.discount ? `<div><span>Chegirma</span><b>−${money(s.discount)}</b></div>` : ""}
+        <div class="grand"><span>Jami</span><b>${money(s.total)}</b></div>
+        ${s.returned ? `<div class="amount-out"><span>Qaytarilgan</span><b>−${money(s.returned)}</b></div>
+          <div class="grand"><span>Yakuniy</span><b>${money(net)}</b></div>` : ""}
+        <div><span>To'lov</span><b>${METHOD_NAMES[s.payment_method] || s.payment_method}${s.due_date ? ` · muddat ${esc(s.due_date)}` : ""}</b></div>
+      </div>
+      ${s.returns.length ? `<h3>Qaytarishlar</h3>${s.returns.map((r) => `
+        <div class="return-row"><div><b>${money(r.amount)}</b> · ${r.items.map((x) => `${esc(x.name)} × ${fmtQty(x.qty)}`).join(", ")}
+          <small class="muted">${esc(r.created_at.slice(0, 16))} · ${esc(r.user_name || "")}${r.reason ? " · " + esc(r.reason) : ""}</small></div></div>`).join("")}` : ""}
+      ${s.status === "refunded" ? `<div class="notice error-notice">Bekor qilingan: ${esc(s.refunded_at || "")} · ${esc(s.refunded_by_name || "")}
+        ${s.refund_reason ? " · " + esc(s.refund_reason) : ""}</div>` : ""}
+      ${returnMode ? `
+        <label><span>Qaytarish sababi</span><input id="ret-reason" placeholder="Masalan: yaroqsiz chiqdi"></label>
+        <div class="ret-preview" id="ret-preview"></div>
+        <div class="actions"><button type="button" class="btn" id="ret-back">Orqaga</button>
+          <button type="button" class="btn primary" id="ret-confirm">Qaytarishni tasdiqlash</button></div>` : `
+        <div class="actions sale-actions">
+          ${s.can_manage && s.status === "paid" ? `
+            <button type="button" class="btn danger-text" id="sale-cancel">Bekor qilish</button>
+            ${s.items.some((i) => i.qty > i.returned_qty) ? `<button type="button" class="btn" id="sale-return">↩️ Qaytarish</button>` : ""}` : ""}
+          <button type="button" class="btn primary" id="sale-print">🖨 Chek chiqarish</button>
+        </div>`}
+    </div>`;
+  const mount = (returnMode) => {
+    openModal(render(returnMode), (m) => {
+      if (!returnMode) {
+        $("#sale-print", m).addEventListener("click", () => printReceipt(s));
+        const ret = $("#sale-return", m);
+        if (ret) ret.addEventListener("click", () => mount(true));
+        const cancel = $("#sale-cancel", m);
+        if (cancel) cancel.addEventListener("click", safe(async () => {
+          const reason = prompt(`Chek #${s.id} to'liq bekor qilinadi — ${money(net)} ${s.payment_method === "debt"
+            ? "nasiyadan olib tashlanadi" : "kassadan qaytariladi"}, tovarlar omborga qaytadi.\nChek o'chirilmaydi, tarixda qoladi.\n\nSababini yozing:`);
+          if (reason === null) return;
+          await api("POST", `/api/finance/sales/${s.id}/cancel`, { reason });
+          toast("Chek bekor qilindi");
+          if (onChange) await onChange();
+          saleModal(s.id, onChange);
+        }));
+        return;
+      }
+      const preview = () => {
+        let value = 0;
+        $$(".ret-qty", m).forEach((i) => { value += (+i.value || 0) * +i.dataset.price; });
+        const approx = s.subtotal ? Math.round(value * s.total / s.subtotal) : 0;
+        $("#ret-preview", m).innerHTML = value
+          ? `Qaytariladigan summa: <b>${money(Math.min(approx, net))}</b>${s.discount ? " <small class='muted'>(chegirma ulushi bilan)</small>" : ""}`
+          : `<span class="muted">Qaytariladigan tovar miqdorini kiriting</span>`;
+      };
+      $$(".ret-qty", m).forEach((i) => i.addEventListener("input", preview));
+      preview();
+      $("#ret-back", m).addEventListener("click", () => mount(false));
+      $("#ret-confirm", m).addEventListener("click", safe(async () => {
+        const items = $$(".ret-qty", m).filter((i) => +i.value > 0).map((i) => ({ item_id: +i.dataset.item, qty: +i.value }));
+        const res = await api("POST", `/api/sales/${s.id}/return`, { items, reason: $("#ret-reason", m).value });
+        toast(`Qaytarildi: ${money(res.amount)} ✅ Tovar omborga qaytdi`);
+        if (onChange) await onChange();
+        saleModal(s.id, onChange);
+      }));
+    });
+  };
+  mount(false);
+}
+
+async function viewSales() {
+  const hash = location.hash.split("?")[0];
+  const params = new URLSearchParams(location.hash.split("?")[1] || "");
+  const q = new URLSearchParams();
+  ["from", "to", "status", "method", "q"].forEach((k) => { if (params.get(k)) q.set(k, params.get(k)); });
+  const d = await api("GET", "/api/sales?" + q.toString());
+  const sel = (name, options, value) => `<select name="${name}" style="width:auto">${options.map(([k, v]) =>
+    `<option value="${k}" ${k === (value || "") ? "selected" : ""}>${v}</option>`).join("")}</select>`;
+  const view = layout(`
+    <div class="toolbar"><h2>Savdolar</h2><span class="muted">${d.sales.length} ta chek</span></div>
+    <form class="filters" id="filters">
+      <input type="date" name="from" value="${d.from}" style="width:auto">
+      <input type="date" name="to" value="${d.to}" style="width:auto">
+      ${sel("status", [["", "Barcha cheklar"], ["paid", "Sotilgan"], ["returned", "Qaytarish bo'lgan"], ["refunded", "Bekor qilingan"]], params.get("status"))}
+      ${sel("method", [["", "Barcha to'lovlar"], ...Object.keys(METHOD_NAMES).map((k) => [k, METHOD_NAMES[k]])], params.get("method"))}
+      <input type="search" name="q" placeholder="Chek # yoki mijoz" value="${esc(params.get("q") || "")}" style="width:180px">
+      <button class="btn primary">Ko'rsatish</button>
+    </form>
+    <div class="finance-totals">
+      <div><span class="muted">Cheklar</span><b>${d.totals.count}</b></div>
+      <div><span class="muted">Tushum</span><b class="amount-in">${money(d.totals.revenue)}</b></div>
+      <div><span class="muted">Qaytarilgan</span><b class="amount-out">${money(d.totals.returned)}</b></div>
+      <div><span class="muted">Bekor qilingan</span><b class="amount-out">${money(d.totals.refunded)}</b></div>
+    </div>
+    <div class="panel">
+      ${d.sales.length ? `<div class="table-scroll"><table class="list sales-table">
+        <thead><tr><th>Chek</th><th>Vaqt</th><th class="right">Tovarlar</th><th>Mijoz</th><th>Kassir</th><th>To'lov</th>
+          <th class="right">Summa</th><th>Holati</th></tr></thead>
+        <tbody>${d.sales.map((s) => `
+          <tr class="clickable ${s.status === "refunded" ? "cancelled" : ""}" data-id="${s.id}">
+            <td><b>#${s.id}</b></td>
+            <td class="nowrap">${esc(s.closed_at.slice(0, 16))}</td>
+            <td class="right">${s.items}</td>
+            <td>${esc(s.customer_name || "")}</td>
+            <td class="muted">${esc(s.cashier_name || "")}</td>
+            <td>${METHOD_NAMES[s.payment_method] || ""}</td>
+            <td class="right nowrap"><b>${money(s.total - s.returned)}</b>${s.returned ? `<br><small class="muted"><s>${money(s.total)}</s></small>` : ""}</td>
+            <td>${saleStatusBadge(s)}</td>
+          </tr>`).join("")}</tbody>
+      </table></div>` : `<p class="muted">Tanlangan davrda savdolar yo'q</p>`}
+    </div>`);
+  $("#filters", view).addEventListener("submit", (e) => {
+    e.preventDefault();
+    const f = new URLSearchParams();
+    new FormData(e.target).forEach((v, k) => { if (v) f.set(k, v); });
+    go(hash + "?" + f.toString());
+  });
+  $$("tr[data-id]", view).forEach((tr) => tr.addEventListener("click", () =>
+    saleModal(tr.dataset.id, () => viewSales()).catch((e) => toast(e.message, true))));
+}
+
+// ------------------------------------------------------------ bosh sahifa
+
+const PERIODS = [["today", "Bugun"], ["week", "Joriy hafta"], ["month", "Joriy oy"], ["year", "Joriy yil"]];
+const METHOD_ICONS = { cash: "cash", card: "card", payme: "phone", click: "phone" };
+
+// Grafik o'qi uchun "chiroyli" yuqori chegara: 1, 2, 2.5, 5 × 10^n
+function niceMax(value) {
+  if (value <= 0) return 1;
+  const pow = Math.pow(10, Math.floor(Math.log10(value)));
+  const step = [1, 2, 2.5, 5, 10].find((m) => m * pow >= value);
+  return step * pow;
+}
+
+function compact(n) {
+  if (n >= 1e9) return (n / 1e9).toLocaleString("ru-RU", { maximumFractionDigits: 1 }) + " mlrd";
+  if (n >= 1e6) return (n / 1e6).toLocaleString("ru-RU", { maximumFractionDigits: 1 }) + " mln";
+  if (n >= 1e3) return Math.round(n / 1e3) + " ming";
+  return String(n);
+}
+
+// Bitta qatorli ustunli grafik (SVG): ingichka ustunlar, 4px yumaloq uchi, hover'da qiymat
+function columnChart(series, width) {
+  // SVG konteyner kengligida chiziladi - yozuvlar kattalashib/kichrayib ketmasin
+  const W = Math.max(280, Math.round(width || 640)), H = W < 500 ? 180 : 240;
+  const padL = 70, padB = 26, padT = 12;
+  const max = niceMax(Math.max(0, ...series.map((d) => d.value)));
+  const plotW = W - padL, plotH = H - padB - padT;
+  const slot = plotW / series.length;
+  const barW = Math.min(24, slot * 0.62);
+  const every = Math.ceil(series.length / Math.max(4, Math.floor(plotW / 44)));  // yorliqlar ustma-ust tushmasin
+  const y = (v) => padT + plotH - (v / max) * plotH;
+  const ticks = [0, max / 2, max];
+  const grid = ticks.map((t) => `
+    <line x1="${padL}" x2="${W}" y1="${y(t)}" y2="${y(t)}" class="grid"/>
+    <text x="${padL - 8}" y="${y(t) + 4}" class="tick" text-anchor="end">${compact(t)}</text>`).join("");
+  const bars = series.map((d, i) => {
+    const x = padL + i * slot + (slot - barW) / 2;
+    const h = (d.value / max) * plotH;
+    const top = y(d.value), r = Math.min(4, h, barW / 2);
+    const path = h > 0 ? `M${x},${padT + plotH} V${top + r} Q${x},${top} ${x + r},${top} H${x + barW - r}
+      Q${x + barW},${top} ${x + barW},${top + r} V${padT + plotH} Z` : "";
+    return `
+      <g class="col" data-i="${i}">
+        <rect class="hit" x="${padL + i * slot}" y="${padT}" width="${slot}" height="${plotH}"/>
+        ${path ? `<path d="${path}" class="bar"/>` : ""}
+        ${i % every === 0 ? `<text x="${x + barW / 2}" y="${H - 8}" class="tick" text-anchor="middle">${esc(d.label)}</text>` : ""}
+      </g>`;
+  }).join("");
+  return `
+    <div class="chart-wrap">
+      <svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" class="chart" role="img" aria-label="Tushum grafigi">${grid}${bars}</svg>
+      <div class="chart-tip hidden"></div>
+      ${series.every((d) => !d.value) ? `<div class="chart-empty">Bu davrda savdo yo'q</div>` : ""}
+    </div>`;
+}
+
+function bindChart(root, series, formatLabel) {
+  const wrap = $(".chart-wrap", root);
+  const tip = $(".chart-tip", wrap);
+  $$(".col", wrap).forEach((g) => {
+    const show = () => {
+      const d = series[+g.dataset.i];
+      $$(".col.hover", wrap).forEach((x) => x.classList.remove("hover"));
+      g.classList.add("hover");
+      tip.innerHTML = `<b>${money(d.value)}</b><span>${esc(formatLabel(d.label))}</span>`;
+      tip.classList.remove("hidden");
+      const box = g.querySelector(".hit").getBoundingClientRect();
+      const wb = wrap.getBoundingClientRect();
+      const left = Math.min(Math.max(box.left - wb.left + box.width / 2, 70), wb.width - 70);
+      tip.style.left = left + "px";
+    };
+    g.addEventListener("mouseenter", show);
+    g.addEventListener("click", show);
+  });
+  wrap.addEventListener("mouseleave", () => {
+    tip.classList.add("hidden");
+    $$(".col.hover", wrap).forEach((x) => x.classList.remove("hover"));
+  });
+}
+
+async function viewDashboard() {
+  let period = "month";
+  try { period = localStorage.getItem("dash-period") || "month"; } catch { /* ruxsat yo'q */ }
+  const view = layout(`<div id="dash"><p class="muted">Yuklanmoqda...</p></div>`);
+
+  async function render() {
+    const d = await api("GET", "/api/dashboard?period=" + period);
+    // grafik paneli to'liq kenglikda: panel ichki chekinishlarini ayiramiz
+    const chartWidth = $("#dash", view).clientWidth - 34;
+    const s = d.summary;
+    const periodName = PERIODS.find((p) => p[0] === period)[1];
+    const methodTotal = d.by_method.reduce((a, m) => a + m.revenue, 0);
+    const labelFor = (label) => period === "today" ? `${label}:00 — ${label}:59`
+      : period === "month" ? `${label}-kun` : label;
+    const tile = (ic, label, value, sub) => `
+      <div class="kpi">
+        <div class="kpi-head"><span class="kpi-icon">${icon(ic)}</span>${label}</div>
+        <div class="kpi-value">${value}</div>
+        <div class="kpi-sub">${sub}</div>
+      </div>`;
+    $("#dash", view).innerHTML = `
+      <div class="kpi-row">
+        ${tile("cash", "Kunlik savdo", money(d.today.revenue), `${d.today.orders} ta chek`)}
+        ${tile("reports", "Oylik savdo", money(d.month.revenue), `${d.month.orders} ta chek`)}
+        ${tile("check", "Bugungi cheklar soni", d.today.orders, "sotuvlar")}
+        ${tile("sales", "O'rtacha chek", money(s.average), periodName.toLowerCase())}
+        ${tile("finance", "Foyda", money(s.profit), periodName.toLowerCase())}
+      </div>
+      <div class="kpi-row stock-kpis">
+        <a class="kpi" href="#/stock">${`<div class="kpi-head"><span class="kpi-icon">${icon("warehouse")}</span>Ombordagi tovar (tannarxda)</div>
+          <div class="kpi-value">${money(d.stock.value)}</div>`}</a>
+        <a class="kpi warn" href="#/stock?filter=low"><div class="kpi-head"><span class="kpi-icon">${icon("scale")}</span>Kam qolgan tovarlar</div>
+          <div class="kpi-value">${d.stock.low} ta</div></a>
+        <a class="kpi bad" href="#/stock?filter=out"><div class="kpi-head"><span class="kpi-icon">${icon("cancel")}</span>Tugagan tovarlar</div>
+          <div class="kpi-value">${d.stock.out} ta</div></a>
+      </div>
+      <div class="segmented">${PERIODS.map(([k, name]) =>
+        `<button type="button" data-period="${k}" class="${k === period ? "active" : ""}">${name}</button>`).join("")}</div>
+      <div class="dash-grid">
+        <section class="panel dash-chart">
+          <div class="panel-head"><div><span class="muted">Tushum · ${periodName.toLowerCase()}</span>
+            <div class="panel-total">${money(s.revenue)}</div></div></div>
+          ${columnChart(d.series, chartWidth)}
+        </section>
+        <section class="panel">
+          <div class="panel-head"><div><span class="muted">To'lov usuli</span>
+            <div class="panel-total">${money(methodTotal)}</div></div></div>
+          ${d.by_method.map((m) => {
+            const share = methodTotal ? m.revenue / methodTotal : 0;
+            return `
+              <div class="method-row">
+                <span class="method-icon">${icon(METHOD_ICONS[m.method] || "card")}</span>
+                <div class="method-body">
+                  <div class="method-line"><span>${METHOD_NAMES[m.method] || esc(m.method)}</span>
+                    <b>${money(m.revenue)}</b></div>
+                  <div class="meter"><div style="width:${(share * 100).toFixed(1)}%"></div></div>
+                </div>
+              </div>`;
+          }).join("")}
+        </section>
+        <section class="panel">
+          <div class="panel-head"><div><span class="muted">Tranzaksiyalar</span>
+            <div class="panel-total">${s.orders} ta</div></div></div>
+          ${[["box", "Sotilgan tovarlar (birlik)", fmtQty(s.items)], ["check", "Sotuvlar (cheklar)", s.orders + " ta"],
+             ["cancel", "Bekor qilingan cheklar", s.cancelled + " ta"], ["finance", "Tannarx", money(s.cost)]]
+            .map(([ic, name, n]) => `
+              <div class="tx-row"><span class="method-icon">${icon(ic)}</span><span>${name}</span><b>${n}</b></div>`).join("")}
+        </section>
+      </div>`;
+    $$("[data-period]", view).forEach((b) => b.addEventListener("click", () => {
+      period = b.dataset.period;
+      try { localStorage.setItem("dash-period", period); } catch { /* ruxsat yo'q */ }
+      render().catch((e) => toast(e.message, true));
+    }));
+    bindChart(view, d.series, labelFor);
+  }
+  await render();
+}
+
+// ------------------------------------------------------------ CRM: mijozlar va qarzlar
+
+const GENDERS = { m: "Erkak", f: "Ayol" };
+const DEBT_METHODS = [
+  ["cash", "Naqd", "cash", "Naqd kassaga"],
+  ["click", "Click", "phone", "Kartaga"],
+  ["terminal", "Terminal", "terminal", "Hisob raqamga"],
+  ["transfer", "Pul ko'chirish", "transfer", "Hisob raqamga"],
+];
+
+function dateAfter(days) {
+  const d = new Date(Date.now() + days * 86400000);
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
+
+function formatPhone(p) {
+  const m = /^\+998(\d{2})(\d{3})(\d{2})(\d{2})$/.exec(p || "");
+  return m ? `+998 ${m[1]} ${m[2]} ${m[3]} ${m[4]}` : (p || "");
+}
+
+function dueText(d) {
+  if (d.days < 0) return `${-d.days} kun o'tdi`;
+  if (d.days === 0) return "bugun";
+  return `${d.days} kun qoldi`;
+}
+
+// Mijozni qidirib tanlash yoki shu yerning o'zida yangi mijoz yaratish
+function customerPicker(root, onSelect, initial) {
+  root.innerHTML = `
+    <div class="picker">
+      <div class="picker-search">${icon("search")}<input placeholder="Ism yoki telefon bo'yicha qidirish" autocomplete="off"></div>
+      <div class="picker-selected hidden"></div>
+      <div class="picker-results"></div>
+      <button type="button" class="btn small picker-new">+ Yangi mijoz</button>
+      <div class="picker-form hidden">
+        <input name="p-name" placeholder="Ismi">
+        <input name="p-phone" type="tel" placeholder="+998 90 123 45 67">
+        <div class="gender-pick">${Object.entries(GENDERS).map(([k, v], i) =>
+          `<label><input type="radio" name="p-gender" value="${k}" ${i ? "" : "checked"}><span>${v}</span></label>`).join("")}</div>
+        <button type="button" class="btn primary small picker-save">Saqlash va tanlash</button>
+      </div>
+    </div>`;
+  const input = $(".picker-search input", root);
+  const results = $(".picker-results", root);
+  const selected = $(".picker-selected", root);
+  const choose = (c) => {
+    onSelect(c);
+    selected.innerHTML = `<b>${esc(c.name)}</b> · ${esc(formatPhone(c.phone))}
+      <button type="button" class="icon-btn" title="Boshqasini tanlash">✕</button>`;
+    selected.classList.remove("hidden");
+    results.innerHTML = "";
+    $(".picker-search", root).classList.add("hidden");
+    $(".picker-form", root).classList.add("hidden");
+    $(".picker-new", root).classList.add("hidden");
+    $("button", selected).addEventListener("click", () => {
+      onSelect(null);
+      selected.classList.add("hidden");
+      $(".picker-search", root).classList.remove("hidden");
+      $(".picker-new", root).classList.remove("hidden");
+      input.focus();
+    });
+  };
+  let timer;
+  input.addEventListener("input", () => {
+    clearTimeout(timer);
+    timer = setTimeout(safe(async () => {
+      const q = input.value.trim();
+      if (!q) { results.innerHTML = ""; return; }
+      const list = await api("GET", "/api/customers?q=" + encodeURIComponent(q));
+      results.innerHTML = list.slice(0, 6).map((c) => `
+        <button type="button" data-id="${c.id}"><b>${esc(c.name)}${c.telegram_chat_id ? ` <span class="tg-mark" title="Telegram botga ulangan">${icon("telegram")}</span>` : ""}</b><span>${esc(formatPhone(c.phone))}</span>
+          ${c.debt > 0 ? `<em>qarz ${money(c.debt)}</em>` : ""}</button>`).join("") || `<p class="muted">Topilmadi</p>`;
+      $$("[data-id]", results).forEach((b) => b.addEventListener("click", () => choose(list.find((c) => c.id === +b.dataset.id))));
+    }), 250);
+  });
+  $(".picker-new", root).addEventListener("click", () => $(".picker-form", root).classList.toggle("hidden"));
+  $(".picker-save", root).addEventListener("click", safe(async () => {
+    const c = await api("POST", "/api/customers", {
+      name: $("[name=p-name]", root).value, phone: $("[name=p-phone]", root).value,
+      gender: $("[name=p-gender]:checked", root).value,
+    });
+    toast("Mijoz qo'shildi");
+    choose(c);
+  }));
+  if (initial) choose(initial);
+}
+
+function customerForm(c, onSaved) {
+  const isNew = !c;
+  c = c || { gender: "m" };
+  return `
+    <form class="panel customer-form" id="customer-form">
+      <h2>${isNew ? "Yangi mijoz" : "Ma'lumotlarni tahrirlash"}</h2>
+      <label><span>Telefon raqami *</span><input name="phone" type="tel" required value="${esc(formatPhone(c.phone))}" placeholder="+998 90 123 45 67"></label>
+      <label><span>Ismi *</span><input name="name" required value="${esc(c.name || "")}" placeholder="Masalan: Ali Valiyev"></label>
+      <span class="field-label">Jinsi *</span>
+      <div class="gender-pick">${Object.entries(GENDERS).map(([k, v]) =>
+        `<label><input type="radio" name="gender" value="${k}" ${c.gender === k ? "checked" : ""}><span>${v}</span></label>`).join("")}</div>
+      <div class="actions">${isNew ? "" : `<button type="button" class="btn" id="form-cancel">Bekor</button>`}
+        <button class="btn primary">${isNew ? "Mijozni yaratish" : "Saqlash"}</button></div>
+    </form>`;
+}
+
+async function viewCustomers() {
+  const params = new URLSearchParams(location.hash.split("?")[1] || "");
+  const selectedId = +params.get("id") || null;
+  const mode = params.get("mode");  // new / edit
+  const q = params.get("q") || "";
+  const [list, detail] = await Promise.all([
+    api("GET", "/api/customers" + (q ? "?q=" + encodeURIComponent(q) : "")),
+    selectedId ? api("GET", "/api/customers/" + selectedId) : Promise.resolve(null),
+  ]);
+  const open = (id, extra = "") => go(`#/crm/customers?id=${id}${extra}${q ? "&q=" + encodeURIComponent(q) : ""}`);
+
+  let right;
+  if (mode === "new" || (!detail && !list.length)) {
+    right = customerForm(null);
+  } else if (detail && mode === "edit") {
+    right = customerForm(detail);
+  } else if (detail) {
+    const d = detail;
+    right = `
+      <div class="panel customer-card">
+        <div class="customer-head">
+          <div class="avatar big gender-${d.gender}">${esc(d.name[0] || "?").toUpperCase()}</div>
+          <div><h2>${esc(d.name)}</h2>
+            <div class="muted">${esc(formatPhone(d.phone))} · ${GENDERS[d.gender]} · ${esc(d.created_at.slice(0, 10))} dan mijoz</div>
+            ${d.telegram_chat_id ? `<span class="badge tg-badge">${icon("telegram")} Telegram botga ulangan</span>` : ""}</div>
+          <button class="btn small" id="edit-customer">✏️ Tahrirlash</button>
+          ${d.telegram_chat_id ? `<button class="btn small" id="msg-customer" title="Telegram bot orqali xabar">${icon("telegram")} Xabar</button>` : ""}
+        </div>
+        <div class="debt-summary">
+          <div><span class="muted">Jami qarz</span><b>${money(d.total_debt)}</b></div>
+          <div><span class="muted">To'langan</span><b class="amount-in">${money(d.total_paid)}</b></div>
+          <div><span class="muted">Qoldiq</span><b class="${d.remaining > 0 ? "amount-out" : ""}">${money(d.remaining)}</b></div>
+        </div>
+        <div class="toolbar"><h3 style="margin:0;flex:1">Qarzlar</h3>
+          <button class="btn small primary" id="add-debt">+ Qarz qo'shish</button></div>
+        ${d.debts.length ? `<table class="list">
+          <thead><tr><th>Sana</th><th>Izoh</th><th>Muddat</th><th class="right">Summa</th><th class="right">Qoldiq</th><th></th></tr></thead>
+          <tbody>${d.debts.map((x) => `
+            <tr><td class="nowrap">${esc(x.created_at.slice(0, 10))}</td><td class="muted">${esc(x.comment || "")}</td>
+              <td class="nowrap"><span class="due-badge due-${x.bucket}">${esc(x.due_date)} · ${x.bucket === "closed" ? "yopilgan" : dueText(x)}</span></td>
+              <td class="right">${money(x.amount)}</td><td class="right"><b>${money(x.remaining)}</b></td>
+              <td class="right">${x.remaining > 0 ? `<button class="btn small primary" data-pay="${x.id}">To'lash</button>` : ""}</td></tr>`).join("")}
+          </tbody></table>` : `<p class="muted">Qarzi yo'q</p>`}
+        ${d.payments.length ? `<h3>To'lovlar tarixi</h3>
+          <table class="list finance-table"><tbody>${d.payments.map((p) => `
+            <tr class="${p.status === "cancelled" ? "cancelled" : ""}"><td class="nowrap">${esc(p.created_at.slice(0, 16))}</td>
+              <td>${(DEBT_METHODS.find((m) => m[0] === p.method) || [0, p.method])[1]} → ${accountName(p.account)}</td>
+              <td class="muted">${esc(p.user_name || "")}</td>
+              <td class="right">${signedMoney("in", p.amount)}</td>
+              <td>${p.status === "cancelled" ? `<span class="badge off">Bekor qilingan</span>` : `<span class="badge ok">Bajarildi</span>`}</td></tr>`).join("")}
+          </tbody></table>` : ""}
+      </div>`;
+  } else {
+    right = `<div class="panel empty-state">${icon("crm")}<p>Ma'lumotlarini ko'rish uchun chapdan mijozni tanlang</p>
+      <button class="btn primary" id="new-customer-2">+ Yangi mijoz</button></div>`;
+  }
+
+  const view = layout(`
+    <div class="crm-layout">
+      <div class="panel customer-list">
+        <div class="toolbar"><h2 style="flex:1">Mijozlar</h2>
+          <button class="btn small" id="message-customers" title="Mijozlarga Telegram xabar">${icon("telegram")}</button>
+          <button class="btn small" id="import-customers" title="Import">${icon("upload")}</button>
+          <button class="btn primary small" id="new-customer">+ Yangi</button></div>
+        <form id="search" class="picker-search">${icon("search")}<input name="q" value="${esc(q)}" placeholder="Ism yoki telefon"></form>
+        <div class="customer-items">
+          ${list.map((c) => `
+            <button class="customer-item ${c.id === selectedId ? "active" : ""}" data-id="${c.id}">
+              <span class="avatar gender-${c.gender}">${esc(c.name[0] || "?").toUpperCase()}</span>
+              <span class="ci-body"><b>${esc(c.name)}${c.telegram_chat_id ? ` <span class="tg-mark">${icon("telegram")}</span>` : ""}</b><small>${esc(formatPhone(c.phone))}</small></span>
+              ${c.debt > 0 ? `<em class="amount-out">${money(c.debt)}</em>` : ""}
+            </button>`).join("") || `<p class="muted">Mijozlar yo'q</p>`}
+        </div>
+        <p class="muted small-note">Jami: ${list.length} ta mijoz</p>
+      </div>
+      <div class="customer-detail">${right}</div>
+    </div>`);
+
+  $$(".customer-item", view).forEach((b) => b.addEventListener("click", () => open(b.dataset.id)));
+  $("#search", view).addEventListener("submit", (e) => {
+    e.preventDefault();
+    const v = e.target.q.value.trim();
+    go("#/crm/customers" + (v ? "?q=" + encodeURIComponent(v) : ""));
+  });
+  const newBtn = () => go("#/crm/customers?mode=new" + (q ? "&q=" + encodeURIComponent(q) : ""));
+  $("#new-customer", view).addEventListener("click", newBtn);
+  $("#message-customers", view).addEventListener("click", safe(() => messageModal()));
+  $("#import-customers", view).addEventListener("click", () => importModal("customers", "Mijozlarni import qilish", () => router()));
+  const n2 = $("#new-customer-2", view);
+  if (n2) n2.addEventListener("click", newBtn);
+  const form = $("#customer-form", view);
+  if (form) {
+    const cancel = $("#form-cancel", view);
+    if (cancel) cancel.addEventListener("click", () => open(selectedId));
+    form.addEventListener("submit", safe(async (e) => {
+      e.preventDefault();
+      const data = formData(e.target);
+      const saved = mode === "edit" && detail
+        ? await api("PUT", "/api/customers/" + detail.id, data)
+        : await api("POST", "/api/customers", data);
+      toast("Saqlandi ✅");
+      open(saved.id);
+    }));
+  }
+  if (detail && mode !== "edit") {
+    $("#edit-customer", view).addEventListener("click", () => open(detail.id, "&mode=edit"));
+    const msgBtn = $("#msg-customer", view);
+    if (msgBtn) msgBtn.addEventListener("click", safe(() => messageModal([detail])));
+    $("#add-debt", view).addEventListener("click", () => addDebtModal(detail, () => router()));
+    $$("[data-pay]", view).forEach((b) => b.addEventListener("click", () =>
+      payDebtModal(detail.debts.find((x) => x.id === +b.dataset.pay), detail, () => router())));
+  }
+}
+
+function addDebtModal(customer, onSaved) {
+  openModal(`
+    <form id="f">
+      <div class="modal-head"><h2>Qarz qo'shish · ${esc(customer.name)}</h2>
+        <button type="button" class="icon-btn" data-close>✕</button></div>
+      <label><span>Summa (so'm)</span><input name="amount" type="number" min="1" required></label>
+      <label><span>To'lov muddati</span><input name="due_date" type="date" required value="${dateAfter(7)}"></label>
+      <label><span>Izoh <i>(ixtiyoriy)</i></span><input name="comment" maxlength="200"></label>
+      <div class="actions"><button type="button" class="btn" data-close>Bekor</button><button class="btn primary">Saqlash</button></div>
+    </form>`, (m) => $("#f", m).addEventListener("submit", safe(async (e) => {
+    e.preventDefault();
+    await api("POST", `/api/customers/${customer.id}/debts`, formData(e.target));
+    closeModal();
+    toast("Qarz qo'shildi");
+    onSaved();
+  })));
+}
+
+function payDebtModal(debt, customer, onPaid) {
+  const name = customer ? customer.name : debt.customer_name;
+  let method = "cash";
+  openModal(`
+    <form id="f">
+      <div class="modal-head"><h2>Qarzni to'lash · ${esc(name)}</h2>
+        <button type="button" class="icon-btn" data-close>✕</button></div>
+      <p class="muted">Qarz: ${money(debt.amount)} · to'langan: ${money(debt.paid)} ·
+        <b>qoldiq: ${money(debt.remaining)}</b> · muddat ${esc(debt.due_date)} (${dueText(debt)})</p>
+      <span class="field-label">To'lov usuli</span>
+      <div class="pay4">${DEBT_METHODS.map(([k, v, ic, to]) => `
+        <button type="button" class="pay4-btn ${k === method ? "active" : ""}" data-m="${k}">
+          ${icon(ic)}<b>${v}</b><small>→ ${to}</small></button>`).join("")}</div>
+      <label><span>Summa (so'm)</span><input name="amount" type="number" min="1" max="${debt.remaining}" value="${debt.remaining}" required></label>
+      <div class="actions"><button type="button" class="btn" data-close>Bekor</button><button class="btn primary">To'lash</button></div>
+    </form>`, (m) => {
+    $$("[data-m]", m).forEach((b) => b.addEventListener("click", () => {
+      method = b.dataset.m;
+      $$("[data-m]", m).forEach((x) => x.classList.toggle("active", x === b));
+    }));
+    $("#f", m).addEventListener("submit", safe(async (e) => {
+      e.preventDefault();
+      const res = await api("POST", `/api/debts/${debt.id}/pay`, { method, amount: e.target.amount.value });
+      closeModal();
+      toast(`To'lov qabul qilindi → ${accountName(res.account)}` + (res.remaining ? ` · qoldiq ${money(res.remaining)}` : " · qarz yopildi ✅"));
+      onPaid();
+    }));
+  });
+}
+
+async function viewDebts() {
+  const data = await api("GET", "/api/debts");
+  const columns = [
+    ["overdue", "Muddati o'tgan", "To'lov vaqti o'tib ketgan"],
+    ["due", "To'lov vaqti keldi", `Bugun va ${data.due_soon_days} kun ichida`],
+    ["later", "Muddati bor", `${data.due_soon_days} kundan keyin`],
+  ];
+  const view = layout(`
+    <div class="toolbar"><h2>Mijozlar qarzi</h2></div>
+    <div class="debt-board">
+      ${columns.map(([k, title, sub]) => {
+        const items = data.debts.filter((d) => d.bucket === k);
+        return `
+          <section class="debt-col col-${k}">
+            <header><div><b>${title}</b><small>${sub}</small></div>
+              <div class="right"><b>${money(data.totals[k])}</b><small>${items.length} ta</small></div></header>
+            ${items.map((d) => `
+              <article class="debt-card">
+                <div class="dc-top"><b>${esc(d.customer_name)}</b><span class="due-badge due-${d.bucket}">${dueText(d)}</span></div>
+                <div class="muted">${esc(formatPhone(d.customer_phone))}${d.comment ? " · " + esc(d.comment) : ""}</div>
+                <div class="dc-bottom"><div><small class="muted">Muddat: ${esc(d.due_date)}</small>
+                  <div class="dc-amount">${money(d.remaining)}${d.paid ? `<small class="muted"> / ${money(d.amount)}</small>` : ""}</div></div>
+                  <div class="dc-actions"><a class="btn small" href="#/crm/customers?id=${d.customer_id}">Mijoz</a>
+                    <button class="btn small primary" data-pay="${d.id}">To'lash</button></div></div>
+              </article>`).join("") || `<p class="muted empty-col">Yo'q</p>`}
+          </section>`;
+      }).join("")}
+    </div>`);
+  $$("[data-pay]", view).forEach((b) => b.addEventListener("click", () =>
+    payDebtModal(data.debts.find((d) => d.id === +b.dataset.pay), null, () => viewDebts())));
+}
+
+// ------------------------------------------------------------ import (Excel shablon orqali)
+
+function readFileAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(new Error("Faylni o'qib bo'lmadi"));
+    r.readAsDataURL(file);
+  });
+}
+
+function importModal(kind, title, onDone) {
+  openModal(`
+    <div class="modal-head"><h2>${title}</h2><button type="button" class="icon-btn" data-close>✕</button></div>
+    <ol class="import-steps">
+      <li><b>Shablonni yuklab oling</b> va Excel'da oching
+        <a class="btn small" href="/api/import/${kind}/template" download>${icon("download")} Shablon (.xlsx)</a></li>
+      <li><b>To'ldiring</b> — har bir qator bitta ${kind === "products" ? "mahsulot" : "mijoz"}, namuna qatorlarni o'chiring</li>
+      <li><b>Saqlab, shu yerga yuklang</b> (.xlsx yoki .csv)</li>
+    </ol>
+    <label class="file-drop" id="drop">
+      ${icon("upload")}<b>Faylni tanlang</b><small>yoki shu yerga tashlang</small>
+      <input type="file" id="import-file" accept=".xlsx,.csv" hidden>
+    </label>
+    <div id="import-result"></div>
+    <div class="actions"><button class="btn" data-close>Yopish</button></div>`, (m) => {
+    const input = $("#import-file", m);
+    const drop = $("#drop", m);
+    const upload = safe(async (file) => {
+      if (!file) return;
+      const box = $("#import-result", m);
+      box.innerHTML = `<p class="muted">Yuklanmoqda: ${esc(file.name)}...</p>`;
+      let res;
+      try {
+        res = await api("POST", `/api/import/${kind}`, { file_name: file.name, data: await readFileAsDataURL(file) });
+      } catch (e) {
+        box.innerHTML = `<p class="error">${esc(e.message)}</p>`;
+        return;
+      }
+      box.innerHTML = `
+        <div class="import-summary">
+          <div><b class="amount-in">${res.created}</b><span>yangi qo'shildi</span></div>
+          <div><b>${res.updated}</b><span>yangilandi</span></div>
+          <div><b class="${res.errors.length ? "amount-out" : ""}">${res.errors.length}</b><span>xato qator</span></div>
+        </div>
+        ${res.errors.length ? `<div class="import-errors"><table class="list">
+          <thead><tr><th>Qator</th><th>Xato</th></tr></thead>
+          <tbody>${res.errors.map((e) => `<tr><td>${e.row}</td><td>${esc(e.message)}</td></tr>`).join("")}</tbody>
+        </table></div><p class="muted small-note">Xato qatorlarni tuzatib, faylni qayta yuklang — qo'shilganlari takrorlanmaydi.</p>` : ""}`;
+      input.value = "";
+      if (res.created || res.updated) onDone();
+    });
+    input.addEventListener("change", () => upload(input.files[0]));
+    drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+    drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+    drop.addEventListener("drop", (e) => { e.preventDefault(); drop.classList.remove("over"); upload(e.dataTransfer.files[0]); });
+  });
+}
+
+// ------------------------------------------------------------ balansni o'rnatish
+
+function setBalanceModal({ title, current, hint, url, body, allowNegative, withDue, onDone }) {
+  openModal(`
+    <form id="f">
+      <div class="modal-head"><h2>${title}</h2><button type="button" class="icon-btn" data-close>✕</button></div>
+      <p class="muted">${hint}</p>
+      <div class="balance-now"><span class="muted">Hozirgi balans</span><b>${money(current)}</b></div>
+      <label><span>Yangi balans (so'm)</span><input name="balance" type="number" ${allowNegative ? "" : 'min="0"'} step="1" required value="${current}"></label>
+      <div id="diff" class="muted"></div>
+      ${withDue ? `<label id="due-box" class="hidden"><span>Qarz to'lov muddati</span><input name="due_date" type="date" value="${dateAfter(30)}"></label>` : ""}
+      <label><span>Izoh <i>(ixtiyoriy)</i></span><input name="comment" maxlength="200" placeholder="Masalan: boshlang'ich qoldiq"></label>
+      <p class="muted small-note">Eski yozuvlar o'zgarmaydi — farq tuzatish sifatida tarixga yoziladi.</p>
+      <div class="actions"><button type="button" class="btn" data-close>Bekor</button><button class="btn primary">O'rnatish</button></div>
+    </form>`, (m) => {
+    const input = $("input[name=balance]", m);
+    const sync = () => {
+      const diff = (+input.value || 0) - current;
+      $("#diff", m).innerHTML = diff ? `Farq: <b class="${diff > 0 ? "amount-in" : "amount-out"}">${diff > 0 ? "+" : "−"}${money(Math.abs(diff))}</b>` : "";
+      const due = $("#due-box", m);
+      if (due) due.classList.toggle("hidden", diff <= 0);
+    };
+    input.addEventListener("input", sync);
+    input.select();
+    sync();
+    $("#f", m).addEventListener("submit", safe(async (e) => {
+      e.preventDefault();
+      await api("POST", url, Object.assign({}, body, formData(e.target)));
+      closeModal();
+      toast("Balans o'rnatildi ✅");
+      onDone();
+    }));
+  });
+}
+
+async function viewBalances() {
+  const params = new URLSearchParams(location.hash.split("?")[1] || "");
+  const tab = params.get("tab") || "accounts";
+  const b = await api("GET", "/api/balances");
+  const tabs = [["accounts", "Kassa", "cashier"], ["customers", "Mijozlar", "users"], ["suppliers", "Ta'minotchilar", "box"]];
+  const targetName = (h) => h.target === "account" ? `Kassa · ${accountName(h.account)}`
+    : `${h.target === "customer" ? "Mijoz" : "Ta'minotchi"} · ${esc(h.target_name || "")}`;
+  const row = (name, sub, balance, attrs, cls = "") => `
+    <tr><td><b>${name}</b>${sub ? `<div class="muted small-note">${sub}</div>` : ""}</td>
+      <td class="right nowrap"><b class="${cls}">${money(balance)}</b></td>
+      <td class="right"><button class="btn small" ${attrs}>O'zgartirish</button></td></tr>`;
+  let body;
+  if (tab === "accounts") {
+    body = `<table class="list"><thead><tr><th>Hisob</th><th class="right">Balans</th><th></th></tr></thead><tbody>
+      ${b.accounts.accounts.map((a) => row(accountName(a.account), "", a.balance, `data-account="${a.account}"`, a.balance < 0 ? "amount-out" : "")).join("")}
+      <tr class="total-row"><td><b>Umumiy balans</b></td><td class="right"><b>${money(b.accounts.total)}</b></td><td></td></tr>
+    </tbody></table>`;
+  } else if (tab === "customers") {
+    body = `
+      <div class="picker-search" style="margin-bottom:10px">${icon("search")}<input id="filter" placeholder="Ism yoki telefon bo'yicha"></div>
+      <table class="list" id="bal-table"><thead><tr><th>Mijoz</th><th class="right">Qarzi (balans)</th><th></th></tr></thead><tbody>
+      ${b.customers.map((c) => row(esc(c.name), esc(formatPhone(c.phone)), c.balance, `data-customer="${c.id}"`, c.balance > 0 ? "amount-out" : ""))
+        .join("") || `<tr><td colspan="3" class="muted">Mijozlar yo'q — CRM › Mijozlar bo'limida qo'shing</td></tr>`}
+      </tbody></table>`;
+  } else {
+    body = `
+      <form class="inline-form" id="new-supplier">
+        <input name="name" placeholder="Ta'minotchi nomi" required>
+        <input name="phone" type="tel" placeholder="Telefon (ixtiyoriy)">
+        <button class="btn primary">+ Qo'shish</button>
+      </form>
+      <table class="list"><thead><tr><th>Ta'minotchi</th><th class="right">Balans (biz qarzdormiz)</th><th></th></tr></thead><tbody>
+      ${b.suppliers.map((x) => row(esc(x.name), esc(formatPhone(x.phone || "")), x.balance, `data-supplier="${x.id}"`, x.balance > 0 ? "amount-out" : ""))
+        .join("") || `<tr><td colspan="3" class="muted">Ta'minotchilar yo'q</td></tr>`}
+      </tbody></table>
+      <p class="muted small-note">"Ta'minotchiga pul berish" chiqimida ta'minotchi tanlansa, uning balansidan avtomatik ayiriladi.</p>`;
+  }
+  const view = layout(`
+    <div class="toolbar"><h2>Balansni o'rnatish</h2></div>
+    <div class="segmented">${tabs.map(([k, name, ic]) =>
+      `<button type="button" data-tab="${k}" class="${k === tab ? "active" : ""}">${icon(ic)} ${name}</button>`).join("")}</div>
+    <div class="two-col balances-layout">
+      <div class="panel">${body}</div>
+      <div class="panel">
+        <h3>O'zgarishlar tarixi</h3>
+        ${b.history.length ? `<table class="list"><tbody>${b.history.map((h) => {
+          const diff = h.new_balance - h.old_balance;
+          return `<tr><td>${targetName(h)}<div class="muted small-note">${esc(h.created_at.slice(0, 16))} · ${esc(h.user_name || "")}
+            ${h.comment ? " · " + esc(h.comment) : ""}</div></td>
+            <td class="right nowrap">${money(h.old_balance)} → <b>${money(h.new_balance)}</b>
+              <div class="${diff > 0 ? "amount-in" : "amount-out"} small-note">${diff > 0 ? "+" : "−"}${money(Math.abs(diff))}</div></td></tr>`;
+        }).join("")}</tbody></table>` : `<p class="muted">Hali o'zgartirilmagan</p>`}
+      </div>
+    </div>`);
+  const reload = () => router();
+  $$("[data-tab]", view).forEach((t) => t.addEventListener("click", () => go("#/finance/balances?tab=" + t.dataset.tab)));
+  $$("[data-account]", view).forEach((btn) => btn.addEventListener("click", () => {
+    const a = b.accounts.accounts.find((x) => x.account === btn.dataset.account);
+    setBalanceModal({ title: `Kassa balansi · ${accountName(a.account)}`, current: a.balance, allowNegative: true,
+      hint: "Kassadagi haqiqiy pulni kiriting — farq kirim yoki chiqim tuzatishi bo'lib yoziladi.",
+      url: "/api/balances/account", body: { account: a.account }, onDone: reload });
+  }));
+  $$("[data-customer]", view).forEach((btn) => btn.addEventListener("click", () => {
+    const c = b.customers.find((x) => x.id === +btn.dataset.customer);
+    setBalanceModal({ title: `Mijoz balansi · ${esc(c.name)}`, current: c.balance, withDue: true,
+      hint: "Mijozning bizdan qarzi. Ko'paytirilsa yangi qarz yoziladi, kamaytirilsa eski qarzlardan ayiriladi (kassaga pul tushmaydi).",
+      url: "/api/balances/customer", body: { customer_id: c.id }, onDone: reload });
+  }));
+  $$("[data-supplier]", view).forEach((btn) => btn.addEventListener("click", () => {
+    const x = b.suppliers.find((y) => y.id === +btn.dataset.supplier);
+    setBalanceModal({ title: `Ta'minotchi balansi · ${esc(x.name)}`, current: x.balance, allowNegative: true,
+      hint: "Biz ta'minotchiga qancha qarzdormiz. Manfiy son — ta'minotchi bizga qarzdor.",
+      url: "/api/balances/supplier", body: { supplier_id: x.id }, onDone: reload });
+  }));
+  const filter = $("#filter", view);
+  if (filter) filter.addEventListener("input", () => {
+    const q = filter.value.toLowerCase().replace(/\s/g, "");
+    $$("#bal-table tbody tr", view).forEach((tr) => {
+      tr.style.display = tr.textContent.toLowerCase().replace(/\s/g, "").includes(q) ? "" : "none";
+    });
+  });
+  const sup = $("#new-supplier", view);
+  if (sup) sup.addEventListener("submit", safe(async (e) => {
+    e.preventDefault();
+    await api("POST", "/api/suppliers", formData(e.target));
+    toast("Ta'minotchi qo'shildi");
+    reload();
+  }));
+}
+
+// ------------------------------------------------------------ moliya
+
+const ACCOUNTS = [["cash", "Naqd", "cash"], ["card", "Karta", "card"], ["payme", "Payme", "phone"], ["click", "Click", "phone"],
+  ["bank", "Hisob raqam", "bank"]];
+const DIRECTION_NAMES = { in: "Kirim", out: "Chiqim" };
+const accountName = (a) => (ACCOUNTS.find((x) => x[0] === a) || [a, a])[1];
+
+function signedMoney(direction, amount) {
+  return `<b class="amount-${direction}">${direction === "in" ? "+" : "−"}${money(amount)}</b>`;
+}
+
+function entryModal(direction, balance, onSaved) {
+  Promise.all([api("GET", "/api/finance/types"), direction === "out" ? api("GET", "/api/suppliers") : []]).then(([types, suppliers]) => {
+    const list = types.filter((t) => t.direction === direction && !t.is_adjust);
+    const balances = {};
+    balance.accounts.forEach((a) => { balances[a.account] = a.balance; });
+    openModal(`
+      <form id="f">
+        <div class="modal-head"><h2>${direction === "in" ? "➕ Kirim" : "➖ Chiqim"}</h2>
+          <button type="button" class="icon-btn" data-close aria-label="Yopish">✕</button></div>
+        <label><span>Tranzaksiya</span>
+          <select name="type_id" required>
+            ${list.map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join("")}
+          </select>
+          ${list.length ? "" : `<small class="error">Bu turda tranzaksiya yo'q — "Tranzaksiya yaratish" bo'limida yarating</small>`}
+        </label>
+        <span class="field-label">Hisob</span>
+        <div class="account-pick">
+          ${ACCOUNTS.map(([k, name, ic], i) => `
+            <label class="account-option"><input type="radio" name="account" value="${k}" ${i === 0 ? "checked" : ""}>
+              <span>${icon(ic)}<b>${name}</b><small>${money(balances[k] || 0)}</small></span></label>`).join("")}
+        </div>
+        <label><span>Summa (so'm)</span><input name="amount" type="number" min="1" step="1" required inputmode="numeric"></label>
+        ${direction === "out" ? `<label><span>Ta'minotchi <i>(ixtiyoriy — tanlansa uning balansidan ayiriladi)</i></span>
+          <select name="supplier_id"><option value="">— Tanlanmagan —</option>
+            ${suppliers.map((x) => `<option value="${x.id}">${esc(x.name)} · ${money(x.balance)}</option>`).join("")}</select></label>` : ""}
+        <label><span>Izoh <i>(ixtiyoriy)</i></span><input name="comment" maxlength="200" placeholder="Masalan: mijoz ismi yoki ta'minotchi"></label>
+        <p class="muted small-note">Saqlangan tranzaksiyani o'zgartirib bo'lmaydi, faqat bekor qilish mumkin.</p>
+        <div class="actions"><button type="button" class="btn" data-close>Bekor</button>
+          <button class="btn primary" ${list.length ? "" : "disabled"}>Saqlash</button></div>
+      </form>`, (m) => $("#f", m).addEventListener("submit", safe(async (e) => {
+      e.preventDefault();
+      const btn = $("button.primary", e.target);
+      btn.disabled = true;
+      try {
+        await api("POST", "/api/finance/entries", formData(e.target));
+      } finally {
+        btn.disabled = false;
+      }
+      closeModal();
+      toast((direction === "in" ? "Kirim" : "Chiqim") + " saqlandi ✅");
+      onSaved();
+    })));
+  }).catch((e) => toast(e.message, true));
+}
+
+function entriesTable(entries, withCancel) {
+  if (!entries.length) return `<p class="muted">Tranzaksiyalar yo'q</p>`;
+  return `
+    <div class="table-scroll"><table class="list finance-table">
+      <thead><tr><th>Sana</th><th>Tranzaksiya</th><th>Hisob</th><th>Izoh</th><th>Xodim</th>
+        <th class="right">Summa</th><th>Holati</th>${withCancel ? "<th></th>" : ""}</tr></thead>
+      <tbody>
+        ${entries.map((e) => `
+          <tr class="${e.status === "cancelled" ? "cancelled" : ""}">
+            <td class="nowrap">${esc(e.created_at.slice(0, 16))}</td>
+            <td><span class="dir-dot dir-${e.direction}">${icon(e.direction)}</span>${esc(e.type_name)}
+              ${e.source === "sale" ? `<span class="badge">avtomatik</span>` : ""}
+              ${e.source === "debt" ? `<span class="badge">CRM</span>` : ""}
+              ${e.source === "return" ? `<span class="badge">chekdan</span>` : ""}</td>
+            <td>${accountName(e.account)}</td>
+            <td class="muted">${esc(e.comment || "")}</td>
+            <td class="muted">${esc(e.user_name || "")}</td>
+            <td class="right nowrap">${signedMoney(e.direction, e.amount)}</td>
+            <td>${e.status === "cancelled"
+              ? `<span class="badge off" title="${esc((e.cancelled_by_name || "") + (e.cancel_reason ? ": " + e.cancel_reason : ""))}">Bekor qilingan</span>`
+              : `<span class="badge ok">Bajarildi</span>`}</td>
+            ${withCancel ? `<td class="right">${e.status === "done" && e.source !== "return"
+              ? `<button class="btn small danger" data-cancel="${e.id}" data-source="${e.source}"
+                  data-direction="${e.direction}" data-amount="${e.amount}">Bekor qilish</button>` : ""}</td>` : ""}
+          </tr>`).join("")}
+      </tbody>
+    </table></div>`;
+}
+
+function bindCancel(root, onDone) {
+  $$("[data-cancel]", root).forEach((b) => b.addEventListener("click", safe(async () => {
+    const sale = b.dataset.source === "sale";
+    const effect = b.dataset.direction === "in"
+      ? `${money(+b.dataset.amount)} kassadan chiqadi`
+      : `${money(+b.dataset.amount)} kassaga qaytadi`;
+    const reason = prompt(
+      (sale ? `Chek #${b.dataset.cancel} bekor qilinadi (pul qaytariladi, tovar omborga qaytadi).\n` : "Tranzaksiya bekor qilinadi.\n") +
+      `${effect}. Yozuv o'chirilmaydi, tarixda qoladi.\n\nSababini yozing:`);
+    if (reason === null) return;
+    const url = sale ? `/api/finance/sales/${b.dataset.cancel}/cancel`
+      : b.dataset.source === "debt" ? `/api/debt-payments/${b.dataset.cancel}/cancel`
+        : `/api/finance/entries/${b.dataset.cancel}/cancel`;
+    await api("POST", url, { reason });
+    toast(`Bekor qilindi: ${effect}`);
+    onDone();
+  })));
+}
+
+async function viewFinanceCash() {
+  const [balance, recent] = await Promise.all([api("GET", "/api/finance/balance"), api("GET", "/api/finance/entries")]);
+  const view = layout(`
+    <div class="toolbar">
+      <h2>Kassa</h2>
+      <button class="btn primary" id="add-in">${icon("in")} Kirim</button>
+      <button class="btn" id="add-out">${icon("out")} Chiqim</button>
+    </div>
+    <div class="kpi-row finance-balances">
+      <div class="kpi total-kpi">
+        <div class="kpi-head"><span class="kpi-icon">${icon("finance")}</span>Umumiy balans</div>
+        <div class="kpi-value ${balance.total < 0 ? "negative" : ""}">${money(balance.total)}</div>
+        <div class="kpi-sub">barcha hisoblar</div>
+      </div>
+      ${balance.accounts.map((a) => `
+        <div class="kpi">
+          <div class="kpi-head"><span class="kpi-icon">${icon((ACCOUNTS.find((x) => x[0] === a.account) || [0, 0, "card"])[2])}</span>
+            ${accountName(a.account)}</div>
+          <div class="kpi-value ${a.balance < 0 ? "negative" : ""}">${money(a.balance)}</div>
+          <div class="kpi-breakdown">
+            <span>Savdo</span><b>${money(a.sales)}</b>
+            <span>Qarz to'lovi</span><b class="amount-in">+${money(a.debt)}</b>
+            <span>Kirim</span><b class="amount-in">+${money(a.in)}</b>
+            <span>Chiqim</span><b class="amount-out">−${money(a.out)}</b>
+          </div>
+        </div>`).join("")}
+    </div>
+    <div class="panel">
+      <div class="toolbar"><h3 style="margin:0;flex:1">So'nggi tranzaksiyalar</h3>
+        <a class="btn small" href="#/finance/entries">Hammasi →</a></div>
+      ${entriesTable(recent.entries.slice(0, 10), true)}
+    </div>`);
+  const reload = () => viewFinanceCash().catch((e) => toast(e.message, true));
+  $("#add-in", view).addEventListener("click", () => entryModal("in", balance, reload));
+  $("#add-out", view).addEventListener("click", () => entryModal("out", balance, reload));
+  bindCancel(view, reload);
+}
+
+async function viewFinanceEntries() {
+  const params = new URLSearchParams(location.hash.split("?")[1] || "");
+  const q = new URLSearchParams();
+  ["from", "to", "direction", "account", "source"].forEach((k) => { if (params.get(k)) q.set(k, params.get(k)); });
+  const d = await api("GET", "/api/finance/entries?" + q.toString());
+  const sel = (name, options, value) => `<select name="${name}" style="width:auto">${options.map(([k, v]) =>
+    `<option value="${k}" ${k === (value || "") ? "selected" : ""}>${v}</option>`).join("")}</select>`;
+  const view = layout(`
+    <div class="toolbar"><h2>Tranzaksiyalar</h2></div>
+    <form class="filters" id="filters">
+      <input type="date" name="from" value="${d.from}" style="width:auto">
+      <input type="date" name="to" value="${d.to}" style="width:auto">
+      ${sel("direction", [["", "Kirim va chiqim"], ["in", "Faqat kirim"], ["out", "Faqat chiqim"]], params.get("direction"))}
+      ${sel("account", [["", "Barcha hisoblar"], ...ACCOUNTS.map(([k, v]) => [k, v])], params.get("account"))}
+      ${sel("source", [["all", "Hammasi"], ["manual", "Faqat qo'lda kiritilgan"], ["sales", "Faqat savdo"], ["debts", "Faqat qarz to'lovlari"]], params.get("source") || "all")}
+      <button class="btn primary">Ko'rsatish</button>
+    </form>
+    <div class="finance-totals">
+      <div><span class="muted">Kirim</span><b class="amount-in">+${money(d.total_in)}</b></div>
+      <div><span class="muted">Chiqim</span><b class="amount-out">−${money(d.total_out)}</b></div>
+      <div><span class="muted">Farq</span><b>${money(d.total_in - d.total_out)}</b></div>
+    </div>
+    <div class="panel">${entriesTable(d.entries, true)}</div>`);
+  $("#filters", view).addEventListener("submit", (e) => {
+    e.preventDefault();
+    const f = new URLSearchParams();
+    new FormData(e.target).forEach((v, k) => { if (v && v !== "all") f.set(k, v); });
+    go("#/finance/entries?" + f.toString());
+  });
+  bindCancel(view, () => router());
+}
+
+async function viewFinanceTypes() {
+  const types = await api("GET", "/api/finance/types");
+  const view = layout(`
+    <div class="two-col">
+      <form class="panel" id="f">
+        <h2>Tranzaksiya yaratish</h2>
+        <label><span>Nomi</span><input name="name" required minlength="2" maxlength="80" placeholder="Masalan: Ijara to'lovi"></label>
+        <span class="field-label">Turi</span>
+        <div class="kind-switch">
+          <label class="kind-option"><input type="radio" name="direction" value="in" checked>
+            <span>${icon("in")} Kirim<small>Kassaga pul tushadi</small></span></label>
+          <label class="kind-option"><input type="radio" name="direction" value="out">
+            <span>${icon("out")} Chiqim<small>Kassadan pul chiqadi</small></span></label>
+        </div>
+        <p class="muted small-note">Nomi takrorlanmaydi. Yaratilgan tranzaksiyani o'zgartirib bo'lmaydi.</p>
+        <div class="actions"><button class="btn primary">Yaratish</button></div>
+      </form>
+      <div class="panel">
+        <h2>Tranzaksiyalar ro'yxati</h2>
+        <table class="list">
+          <thead><tr><th>Nomi</th><th>Turi</th><th>Ishlatilgan</th><th>Yaratgan</th></tr></thead>
+          <tbody>
+            ${types.map((t) => `
+              <tr><td><b>${esc(t.name)}</b> ${t.is_system ? `<span class="badge">bazaviy</span>` : ""}</td>
+                <td><span class="dir-dot dir-${t.direction}">${icon(t.direction)}</span>${DIRECTION_NAMES[t.direction]}</td>
+                <td class="muted">${t.used} marta</td>
+                <td class="muted">${t.is_system ? "tizim" : esc(t.created_by_name || "")} · ${esc(t.created_at.slice(0, 10))}</td>
+              </tr>`).join("")}
+          </tbody>
+        </table>
+      </div>
+    </div>`);
+  $("#f", view).addEventListener("submit", safe(async (e) => {
+    e.preventDefault();
+    await api("POST", "/api/finance/types", formData(e.target));
+    toast("Tranzaksiya yaratildi ✅");
+    viewFinanceTypes();
+  }));
+}
+
+// ------------------------------------------------------------ hisobot
+
+async function viewReports() {
+  const params = new URLSearchParams(location.hash.split("?")[1] || "");
+  const from = params.get("from") || today();
+  const to = params.get("to") || from;
+  const r = await api("GET", `/api/reports?from=${from}&to=${to}`);
+
+  const view = layout(`
+    <div class="toolbar">
+      <h2>Hisobot</h2>
+      <input type="date" id="from" value="${from}" style="width:auto">
+      <span>—</span>
+      <input type="date" id="to" value="${to}" style="width:auto">
+      <button class="btn primary" id="apply">Ko'rsatish</button>
+      <button class="btn" id="today">Bugun</button>
+    </div>
+    <div class="stats">
+      <div class="stat"><div class="label">Tushum</div><div class="value">${money(r.summary.revenue)}</div></div>
+      <div class="stat"><div class="label">Cheklar</div><div class="value">${r.summary.orders}</div></div>
+      <div class="stat"><div class="label">O'rtacha chek</div><div class="value">${money(r.summary.average)}</div></div>
+      <div class="stat"><div class="label">Tannarx</div><div class="value">${money(r.summary.cost)}</div></div>
+      <div class="stat"><div class="label">Foyda</div><div class="value profit">${money(r.summary.profit)}</div></div>
+      <div class="stat"><div class="label">Chegirmalar</div><div class="value">${money(r.summary.discount)}</div></div>
+    </div>
+    <div class="report-grid">
+      <div class="panel"><h3>To'lov turlari</h3>
+        <table class="list">
+          ${r.by_method.map((m) => `<tr><td>${METHOD_NAMES[m.method] || m.method}</td><td>${m.orders} ta</td><td class="right">${money(m.revenue)}</td></tr>`).join("")
+            || `<tr><td class="muted">Ma'lumot yo'q</td></tr>`}
+        </table>
+      </div>
+      <div class="panel"><h3>Ko'p sotilgan tovarlar</h3>
+        <table class="list">
+          ${r.top_products.map((p) => `<tr><td>${esc(p.name)}</td><td class="nowrap">${fmtQty(p.qty)} ${UNITS[p.unit] || ""}</td><td class="right">${money(p.revenue)}</td>
+            <td class="right muted" title="Foyda">+${money(p.profit)}</td></tr>`).join("")
+            || `<tr><td class="muted">Ma'lumot yo'q</td></tr>`}
+        </table>
+      </div>
+      <div class="panel"><h3>Kassirlar</h3>
+        <table class="list">
+          ${r.by_cashier.map((w) => `<tr><td>${esc(w.name)}</td><td>${w.orders} ta</td><td class="right">${money(w.revenue)}</td></tr>`).join("")
+            || `<tr><td class="muted">Ma'lumot yo'q</td></tr>`}
+        </table>
+      </div>
+    </div>
+    <p class="muted">Har bir chekni ko'rish: <a href="#/reports/sales?from=${from}&to=${to}">Savdolar →</a></p>`);
+
+  $("#apply").addEventListener("click", () => go(`#/reports?from=${$("#from").value}&to=${$("#to").value}`));
+  $("#today").addEventListener("click", () => go("#/reports"));
+}
+
+// ------------------------------------------------------------ ombor
+
+const MOVE_NAMES = { initial: "Boshlang'ich qoldiq", sale: "Sotuv", return: "Qaytarish", cancel: "Chek bekor qilindi",
+  purchase: "Kirim", purchase_cancel: "Kirim bekor qilindi", count: "Inventarizatsiya", writeoff: "Hisobdan chiqarish" };
+
+function stockBadge(p) {
+  const cls = p.stock <= 0 ? "out" : p.stock <= p.min_stock ? "low" : "";
+  return `<span class="stock-badge ${cls}">${fmtQty(p.stock)} ${UNITS[p.unit] || ""}</span>`;
+}
+
+function signedQty(q, unit) {
+  return `<span class="${q < 0 ? "amount-out" : "amount-in"}">${q > 0 ? "+" : ""}${fmtQty(q)} ${UNITS[unit] || ""}</span>`;
+}
+
+// Tovar qidirish: nom yoki shtrix-kod (skaner Enter bosadi) -> onPick(tovar)
+function productSearch(root, onPick, placeholder) {
+  root.innerHTML = `
+    <form class="picker-search product-search" autocomplete="off">${icon("barcode")}
+      <input placeholder="${esc(placeholder || "Shtrix-kod yoki tovar nomi")}"></form>
+    <div class="picker-results"></div>`;
+  const input = $("input", root);
+  const results = $(".picker-results", root);
+  const choose = (p) => { onPick(p); input.value = ""; results.innerHTML = ""; input.focus(); };
+  const find = () => {
+    const q = input.value.trim().toLowerCase();
+    if (!q) return [];
+    return state.products.filter((p) => p.barcode === q || p.name.toLowerCase().indexOf(q) >= 0).slice(0, 8);
+  };
+  input.addEventListener("input", () => {
+    const list = find();
+    results.innerHTML = list.map((p) => `<button type="button" data-id="${p.id}"><b>${esc(p.name)}</b>
+      <span>${esc(p.barcode || "")}</span><em>${fmtQty(p.stock)} ${UNITS[p.unit]}</em></button>`).join("")
+      || (input.value.trim() ? `<p class="muted">Topilmadi</p>` : "");
+    $$("[data-id]", results).forEach((b) => b.addEventListener("click", () => choose(state.products.find((p) => p.id === +b.dataset.id))));
+  });
+  $("form", root).addEventListener("submit", (e) => {
+    e.preventDefault();
+    const q = input.value.trim();
+    const exact = state.products.find((p) => p.barcode === q);
+    const list = find();
+    if (exact || list.length === 1) choose(exact || list[0]);
+    else if (q) toast(list.length ? "Ro'yxatdan tanlang" : `"${q}" topilmadi`, !list.length);
+  });
+  return input;
+}
+
+async function productMovesModal(p) {
+  const d = await api("GET", `/api/stock/moves?product_id=${p.id}`);
+  openModal(`
+    <div class="moves-modal">
+      <div class="modal-head"><h2>${esc(p.name)}</h2><button type="button" class="icon-btn" data-close>✕</button></div>
+      <p>Qoldiq: ${stockBadge(p)} · tannarx ${money(p.cost)} · narx ${money(p.price)}</p>
+      <div class="table-scroll"><table class="list">
+        <thead><tr><th>Vaqt</th><th>Harakat</th><th class="right">Miqdor</th><th class="right">Qoldiq</th><th>Xodim</th></tr></thead>
+        <tbody>${d.items.map((m) => `<tr><td class="nowrap">${esc(m.created_at.slice(0, 16))}</td>
+          <td>${MOVE_NAMES[m.kind] || m.kind}${m.ref_id && (m.kind === "sale" || m.kind === "return" || m.kind === "cancel") ? ` #${m.ref_id}` : ""}
+            ${m.comment ? `<small class="muted"> · ${esc(m.comment)}</small>` : ""}</td>
+          <td class="right nowrap">${signedQty(m.qty, p.unit)}</td><td class="right">${fmtQty(ifNull(m.balance, 0))}</td>
+          <td class="muted">${esc(m.user_name || "")}</td></tr>`).join("") || `<tr><td colspan="5" class="muted">Harakat yo'q</td></tr>`}</tbody>
+      </table></div>
+      <div class="actions"><button class="btn primary" data-close>Yopish</button></div>
+    </div>`);
+}
+
+async function viewStock() {
+  const params = new URLSearchParams(location.hash.split("?")[1] || "");
+  const q = new URLSearchParams();
+  ["q", "category_id", "filter"].forEach((k) => { if (params.get(k)) q.set(k, params.get(k)); });
+  const [d] = await Promise.all([api("GET", "/api/stock?" + q.toString()), loadMenu()]);
+  const t = d.totals;
+  const view = layout(`
+    <div class="toolbar"><h2>Qoldiqlar</h2>
+      ${can("warehouse") ? `<a class="btn primary" href="#/purchases/new">${icon("in")} Kirim qilish</a>` : ""}</div>
+    <div class="kpi-row stock-kpis">
+      <div class="kpi"><div class="kpi-head"><span class="kpi-icon">${icon("box")}</span>Tovarlar</div><div class="kpi-value">${t.products}</div></div>
+      <div class="kpi"><div class="kpi-head"><span class="kpi-icon">${icon("finance")}</span>Qoldiq (tannarxda)</div><div class="kpi-value">${money(t.cost_value)}</div></div>
+      <div class="kpi"><div class="kpi-head"><span class="kpi-icon">${icon("sales")}</span>Qoldiq (sotish narxida)</div><div class="kpi-value">${money(t.price_value)}</div></div>
+      <a class="kpi warn" href="#/stock?filter=low"><div class="kpi-head"><span class="kpi-icon">${icon("scale")}</span>Kam qolgan</div><div class="kpi-value">${t.low}</div></a>
+      <a class="kpi bad" href="#/stock?filter=out"><div class="kpi-head"><span class="kpi-icon">${icon("cancel")}</span>Tugagan</div><div class="kpi-value">${t.out}</div></a>
+    </div>
+    <form class="filters" id="filters">
+      <input type="search" name="q" placeholder="Nomi yoki shtrix-kod" value="${esc(params.get("q") || "")}" style="width:240px">
+      <select name="category_id" style="width:auto"><option value="">Barcha kategoriyalar</option>
+        ${state.categories.map((c) => `<option value="${c.id}" ${String(c.id) === params.get("category_id") ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select>
+      <select name="filter" style="width:auto">
+        ${[["", "Hammasi"], ["low", "Kam qolgan"], ["out", "Tugagan"]].map(([k, v]) => `<option value="${k}" ${k === (params.get("filter") || "") ? "selected" : ""}>${v}</option>`).join("")}</select>
+      <button class="btn primary">Ko'rsatish</button>
+    </form>
+    <div class="panel"><div class="table-scroll"><table class="list clickable-rows">
+      <thead><tr><th>Nomi</th><th>Shtrix-kod</th><th>Kategoriya</th><th class="right">Qoldiq</th><th class="right">Minimum</th>
+        <th class="right">Tannarx</th><th class="right">Narx</th><th class="right">Qiymati</th></tr></thead>
+      <tbody>${d.items.map((p) => `<tr class="clickable" data-id="${p.id}">
+        <td><b>${esc(p.name)}</b></td><td class="muted">${esc(p.barcode || "—")}</td><td>${esc(p.category_name || "—")}</td>
+        <td class="right">${stockBadge(p)}</td><td class="right muted">${p.min_stock ? fmtQty(p.min_stock) : "—"}</td>
+        <td class="right muted">${money(p.cost)}</td><td class="right">${money(p.price)}</td>
+        <td class="right">${money(Math.max(p.stock, 0) * p.cost)}</td></tr>`).join("") || `<tr><td colspan="8" class="muted">Tovar topilmadi</td></tr>`}
+      </tbody></table></div></div>`);
+  $("#filters", view).addEventListener("submit", (e) => {
+    e.preventDefault();
+    const f = new URLSearchParams();
+    new FormData(e.target).forEach((v, k) => { if (v) f.set(k, v); });
+    go("#/stock?" + f.toString());
+  });
+  $$("tr[data-id]", view).forEach((tr) => tr.addEventListener("click", () =>
+    productMovesModal(d.items.find((p) => p.id === +tr.dataset.id)).catch((e) => toast(e.message, true))));
+}
+
+async function viewMoves() {
+  const params = new URLSearchParams(location.hash.split("?")[1] || "");
+  const q = new URLSearchParams();
+  ["from", "to", "kind"].forEach((k) => { if (params.get(k)) q.set(k, params.get(k)); });
+  if (!params.get("from")) q.set("from", today());
+  const d = await api("GET", "/api/stock/moves?" + q.toString());
+  const view = layout(`
+    <div class="toolbar"><h2>Ombor harakatlari</h2></div>
+    <form class="filters" id="filters">
+      <input type="date" name="from" value="${esc(q.get("from"))}" style="width:auto">
+      <input type="date" name="to" value="${esc(params.get("to") || "")}" style="width:auto">
+      <select name="kind" style="width:auto"><option value="">Barcha harakatlar</option>
+        ${Object.keys(MOVE_NAMES).map((k) => `<option value="${k}" ${k === params.get("kind") ? "selected" : ""}>${MOVE_NAMES[k]}</option>`).join("")}</select>
+      <button class="btn primary">Ko'rsatish</button>
+    </form>
+    <div class="panel"><div class="table-scroll"><table class="list">
+      <thead><tr><th>Vaqt</th><th>Tovar</th><th>Harakat</th><th class="right">Miqdor</th><th class="right">Qoldiq</th><th>Xodim</th></tr></thead>
+      <tbody>${d.items.map((m) => `<tr><td class="nowrap">${esc(m.created_at.slice(0, 16))}</td><td>${esc(m.product_name)}</td>
+        <td>${MOVE_NAMES[m.kind] || m.kind}${m.ref_id ? ` <span class="muted">#${m.ref_id}</span>` : ""}${m.comment ? `<small class="muted"> · ${esc(m.comment)}</small>` : ""}</td>
+        <td class="right nowrap">${signedQty(m.qty, m.unit)}</td><td class="right">${fmtQty(ifNull(m.balance, 0))}</td>
+        <td class="muted">${esc(m.user_name || "")}</td></tr>`).join("") || `<tr><td colspan="6" class="muted">Harakat yo'q</td></tr>`}</tbody>
+    </table></div></div>`);
+  $("#filters", view).addEventListener("submit", (e) => {
+    e.preventDefault();
+    const f = new URLSearchParams();
+    new FormData(e.target).forEach((v, k) => { if (v) f.set(k, v); });
+    go("#/stock/moves?" + f.toString());
+  });
+}
+
+// --- kirim (ta'minotchidan tovar qabul qilish)
+
+async function purchaseModal(id, onChange) {
+  const p = await api("GET", `/api/purchases/${id}`);
+  openModal(`
+    <div class="sale-receipt">
+      <div class="modal-head"><h2>Kirim #${p.id} ${p.status === "done" ? `<span class="badge ok">Qabul qilingan</span>` : `<span class="badge off">Bekor qilingan</span>`}</h2>
+        <button type="button" class="icon-btn" data-close>✕</button></div>
+      <div class="jd-meta">
+        <div><small>Vaqti</small><b>${esc(p.created_at.slice(0, 16))}</b></div>
+        <div><small>Ta'minotchi</small><b>${esc(p.supplier_name || "Ta'minotchisiz")}</b></div>
+        <div><small>Qabul qildi</small><b>${esc(p.user_name || "")}</b></div>
+      </div>
+      <table class="list"><thead><tr><th>Tovar</th><th class="right">Miqdor</th><th class="right">Tannarx</th><th class="right">Summa</th></tr></thead>
+        <tbody>${p.items.map((i) => `<tr><td>${esc(i.name)}${i.price ? `<small class="muted"> · yangi narx ${money(i.price)}</small>` : ""}</td>
+          <td class="right">${fmtQty(i.qty)} ${UNITS[i.unit] || ""}</td><td class="right">${money(i.cost)}</td>
+          <td class="right">${money(Math.round(i.cost * i.qty))}</td></tr>`).join("")}</tbody></table>
+      <div class="sale-totals">
+        <div class="grand"><span>Jami</span><b>${money(p.total)}</b></div>
+        <div><span>To'langan</span><b>${money(p.paid)}</b></div>
+        ${p.supplier_id ? `<div><span>Ta'minotchiga qarz</span><b>${money(p.total - p.paid)}</b></div>` : ""}
+      </div>
+      ${p.comment ? `<p class="muted">${esc(p.comment)}</p>` : ""}
+      ${p.status === "cancelled" ? `<div class="notice error-notice">Bekor qilingan: ${esc(p.cancelled_at || "")} · ${esc(p.cancelled_by_name || "")}${p.cancel_reason ? " · " + esc(p.cancel_reason) : ""}</div>` : ""}
+      <div class="actions">
+        ${p.status === "done" ? `<button type="button" class="btn danger-text" id="p-cancel">Bekor qilish</button>` : ""}
+        <button type="button" class="btn primary" data-close>Yopish</button>
+      </div>
+    </div>`, (m) => {
+    const c = $("#p-cancel", m);
+    if (c) c.addEventListener("click", safe(async () => {
+      const reason = prompt(`Kirim #${p.id} bekor qilinadi: tovarlar ombordan ayiriladi${p.paid ? ", to'langan pul kassaga qaytadi" : ""}.\\nSababini yozing:`);
+      if (reason === null) return;
+      await api("POST", `/api/purchases/${p.id}/cancel`, { reason });
+      toast("Kirim bekor qilindi");
+      if (onChange) await onChange();
+      purchaseModal(p.id, onChange);
+    }));
+  });
+}
+
+async function viewPurchases() {
+  const params = new URLSearchParams(location.hash.split("?")[1] || "");
+  const q = new URLSearchParams();
+  ["from", "to"].forEach((k) => { if (params.get(k)) q.set(k, params.get(k)); });
+  const d = await api("GET", "/api/purchases?" + q.toString());
+  const view = layout(`
+    <div class="toolbar"><h2>Kirimlar</h2><a class="btn primary" href="#/purchases/new">${icon("plus")} Yangi kirim</a></div>
+    <form class="filters" id="filters">
+      <input type="date" name="from" value="${d.from}" style="width:auto">
+      <input type="date" name="to" value="${d.to}" style="width:auto">
+      <button class="btn primary">Ko'rsatish</button>
+    </form>
+    <div class="finance-totals">
+      <div><span class="muted">Kirim summasi</span><b>${money(d.total)}</b></div>
+      <div><span class="muted">To'langan</span><b>${money(d.paid)}</b></div>
+      <div><span class="muted">Qarzga olingan</span><b class="amount-out">${money(d.total - d.paid)}</b></div>
+    </div>
+    <div class="panel"><div class="table-scroll"><table class="list">
+      <thead><tr><th>#</th><th>Vaqt</th><th>Ta'minotchi</th><th class="right">Tovarlar</th><th class="right">Summa</th>
+        <th class="right">To'langan</th><th>Xodim</th><th>Holati</th></tr></thead>
+      <tbody>${d.items.map((p) => `<tr class="clickable ${p.status === "cancelled" ? "cancelled" : ""}" data-id="${p.id}">
+        <td><b>#${p.id}</b></td><td class="nowrap">${esc(p.created_at.slice(0, 16))}</td><td>${esc(p.supplier_name || "—")}</td>
+        <td class="right">${p.lines}</td><td class="right"><b>${money(p.total)}</b></td><td class="right">${money(p.paid)}</td>
+        <td class="muted">${esc(p.user_name || "")}</td>
+        <td>${p.status === "done" ? `<span class="badge ok">Qabul qilingan</span>` : `<span class="badge off">Bekor qilingan</span>`}</td></tr>`).join("")
+        || `<tr><td colspan="8" class="muted">Tanlangan davrda kirim yo'q</td></tr>`}</tbody>
+    </table></div></div>`);
+  $("#filters", view).addEventListener("submit", (e) => {
+    e.preventDefault();
+    const f = new URLSearchParams();
+    new FormData(e.target).forEach((v, k) => { if (v) f.set(k, v); });
+    go("#/purchases?" + f.toString());
+  });
+  $$("tr[data-id]", view).forEach((tr) => tr.addEventListener("click", () =>
+    purchaseModal(tr.dataset.id, () => viewPurchases()).catch((e) => toast(e.message, true))));
+}
+
+async function viewPurchaseNew() {
+  const [suppliers] = await Promise.all([api("GET", "/api/suppliers"), loadMenu()]);
+  const lines = [];
+  const view = layout(`
+    <div class="toolbar"><a class="btn small" href="#/purchases">← Kirimlar</a><h2>Yangi kirim</h2></div>
+    <div class="doc-layout">
+      <div class="panel">
+        <div id="psearch"></div>
+        <div class="table-scroll"><table class="list doc-lines">
+          <thead><tr><th>Tovar</th><th class="right">Omborda</th><th>Miqdor</th><th>Tannarx (1 birlik)</th><th>Yangi sotish narxi</th><th class="right">Summa</th><th></th></tr></thead>
+          <tbody id="plines"></tbody>
+        </table></div>
+      </div>
+      <form class="panel doc-side" id="pform">
+        <label><span>Ta'minotchi</span>
+          <select name="supplier_id"><option value="">— Ta'minotchisiz (bozordan, darhol to'lanadi) —</option>
+            ${suppliers.map((s) => `<option value="${s.id}">${esc(s.name)}${s.balance ? " · qarz " + money(s.balance) : ""}</option>`).join("")}</select></label>
+        <button type="button" class="btn small" id="new-sup">+ Yangi ta'minotchi</button>
+        <div class="doc-total"><span>Jami</span><b id="ptotal">0 so'm</b></div>
+        <div id="paid-box">
+          <label><span>Hozir to'landi (so'm)</span><input name="paid" type="number" min="0" inputmode="numeric" placeholder="0 — hammasi qarzga"></label>
+        </div>
+        <label><span>Qaysi hisobdan to'landi</span>
+          <select name="account">${ACCOUNTS.map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}</select></label>
+        <label><span>Izoh <i>(faktura raqami va h.k.)</i></span><input name="comment" maxlength="200"></label>
+        <button class="btn primary big">${icon("in")} Kirimni saqlash</button>
+      </form>
+    </div>`);
+  const form = $("#pform", view);
+  const total = () => lines.reduce((s, l) => s + Math.round((+l.cost || 0) * (+l.qty || 0)), 0);
+  const draw = () => {
+    $("#plines", view).innerHTML = lines.map((l, i) => `<tr>
+      <td><b>${esc(l.p.name)}</b><small class="muted"> ${esc(l.p.barcode || "")}</small></td>
+      <td class="right">${stockBadge(l.p)}</td>
+      <td><input data-f="qty" data-i="${i}" type="number" step="${isWeight(l.p) ? "0.001" : "1"}" min="0" value="${l.qty}" style="width:90px"> ${UNITS[l.p.unit]}</td>
+      <td><input data-f="cost" data-i="${i}" type="number" min="0" value="${l.cost}" style="width:120px"></td>
+      <td><input data-f="price" data-i="${i}" type="number" min="0" value="${l.price}" placeholder="${l.p.price}" style="width:120px"></td>
+      <td class="right nowrap" data-sum="${i}">${money((+l.cost || 0) * (+l.qty || 0))}</td>
+      <td><button type="button" class="icon-btn" data-rm="${i}">✕</button></td></tr>`).join("")
+      || `<tr><td colspan="7" class="muted">Tovarni skanerlang yoki qidiring</td></tr>`;
+    $("#ptotal", view).textContent = money(total());
+    $$("#plines input", view).forEach((inp) => inp.addEventListener("input", () => {
+      lines[+inp.dataset.i][inp.dataset.f] = inp.value;
+      const l = lines[+inp.dataset.i];
+      $(`[data-sum="${inp.dataset.i}"]`, view).textContent = money((+l.cost || 0) * (+l.qty || 0));
+      $("#ptotal", view).textContent = money(total());
+    }));
+    $$("[data-rm]", view).forEach((b) => b.addEventListener("click", () => { lines.splice(+b.dataset.rm, 1); draw(); }));
+  };
+  const syncSupplier = () => {
+    const has = !!form.supplier_id.value;
+    $("#paid-box", view).classList.toggle("hidden", !has);
+  };
+  productSearch($("#psearch", view), (p) => {
+    const l = lines.find((x) => x.p.id === p.id);
+    if (l) l.qty = +(+l.qty + 1).toFixed(3);
+    else lines.push({ p, qty: 1, cost: p.cost || "", price: "" });
+    draw();
+    const inp = $(`input[data-f="qty"][data-i="${lines.indexOf(l || lines[lines.length - 1])}"]`, view);
+    if (inp) inp.select();
+  }, "Kirim qilinadigan tovar: shtrix-kod yoki nomi").focus();
+  form.supplier_id.addEventListener("change", syncSupplier);
+  $("#new-sup", view).addEventListener("click", () => openModal(`
+    <form id="sf"><div class="modal-head"><h2>Yangi ta'minotchi</h2><button type="button" class="icon-btn" data-close>✕</button></div>
+      <label><span>Nomi</span><input name="name" required></label>
+      <label><span>Telefon <i>(ixtiyoriy)</i></span><input name="phone" type="tel"></label>
+      <div class="actions"><button type="button" class="btn" data-close>Bekor</button><button class="btn primary">Saqlash</button></div>
+    </form>`, (m) => $("#sf", m).addEventListener("submit", safe(async (e) => {
+    e.preventDefault();
+    const s = await api("POST", "/api/suppliers", formData(e.target));
+    form.supplier_id.insertAdjacentHTML("beforeend", `<option value="${s.id}">${esc(s.name)}</option>`);
+    form.supplier_id.value = s.id;
+    syncSupplier();
+    closeModal();
+  }))));
+  form.addEventListener("submit", safe(async (e) => {
+    e.preventDefault();
+    if (!lines.length) throw new Error("Tovar qo'shing");
+    const body = {
+      supplier_id: form.supplier_id.value || null, paid: +form.paid.value || 0, account: form.account.value,
+      comment: form.comment.value,
+      items: lines.map((l) => ({ product_id: l.p.id, qty: l.qty, cost: l.cost, price: l.price === "" ? null : l.price })),
+    };
+    const p = await api("POST", "/api/purchases", body);
+    toast(`Kirim #${p.id} saqlandi ✅ Qoldiqlar yangilandi`);
+    go("#/purchases");
+  }));
+  syncSupplier();
+  draw();
+}
+
+// --- inventarizatsiya va hisobdan chiqarish
+
+async function viewStockDoc(kind) {
+  const isCount = kind === "count";
+  const [docs] = await Promise.all([api("GET", "/api/stock/docs"), loadMenu()]);
+  const lines = [];
+  const view = layout(`
+    <div class="toolbar"><h2>${isCount ? "Inventarizatsiya" : "Hisobdan chiqarish"}</h2></div>
+    <p class="muted">${isCount
+      ? "Tovarlarni sanab, haqiqiy qoldiqni kiriting. Dastur farqni o'zi hisoblaydi va qoldiqni tuzatadi."
+      : "Yaroqsiz, singan yoki muddati o'tgan tovarlarni ombordan chiqarish."}</p>
+    <div class="doc-layout">
+      <div class="panel">
+        <div id="dsearch"></div>
+        <div class="table-scroll"><table class="list doc-lines">
+          <thead><tr><th>Tovar</th><th class="right">Dasturda</th><th>${isCount ? "Haqiqiy qoldiq" : "Chiqariladigan miqdor"}</th><th class="right">Farq</th><th></th></tr></thead>
+          <tbody id="dlines"></tbody>
+        </table></div>
+      </div>
+      <form class="panel doc-side" id="dform">
+        <div class="doc-total"><span>Farq (tannarxda)</span><b id="dtotal">0 so'm</b></div>
+        <label><span>${isCount ? "Izoh" : "Sababi *"}</span><input name="comment" maxlength="200" ${isCount ? "" : "required"}
+          placeholder="${isCount ? "Masalan: oy oxiri sanoq" : "Masalan: muddati o'tgan"}"></label>
+        <button class="btn primary big">${icon("check")} Saqlash</button>
+      </form>
+    </div>
+    <div class="panel">
+      <h3>Tarix</h3>
+      ${docs.filter((d) => d.kind === kind).map((d) => `
+        <details class="doc-hist"><summary><b>#${d.id}</b> · ${esc(d.created_at.slice(0, 16))} · ${esc(d.user_name || "")} ·
+          ${d.items.length} xil tovar · <span class="${d.total_cost < 0 ? "amount-out" : "amount-in"}">${money(d.total_cost)}</span>
+          ${d.comment ? `<span class="muted"> · ${esc(d.comment)}</span>` : ""}</summary>
+          <table class="list">${d.items.map((i) => `<tr><td>${esc(i.name)}</td><td class="right">${signedQty(i.qty, i.unit)}</td>
+            <td class="right muted">qoldiq ${fmtQty(ifNull(i.balance, 0))}</td></tr>`).join("")}</table></details>`).join("")
+        || `<p class="muted">Hali yo'q</p>`}
+    </div>`);
+  const diff = (l) => isCount ? Math.round(((+l.value || 0) - l.p.stock) * 1000) / 1000 : -(+l.value || 0);
+  const total = () => lines.reduce((s, l) => s + Math.round(diff(l) * l.p.cost), 0);
+  const draw = () => {
+    $("#dlines", view).innerHTML = lines.map((l, i) => `<tr>
+      <td><b>${esc(l.p.name)}</b></td><td class="right">${stockBadge(l.p)}</td>
+      <td><input data-i="${i}" type="number" step="${isWeight(l.p) ? "0.001" : "1"}" min="0" value="${l.value}" style="width:110px"> ${UNITS[l.p.unit]}</td>
+      <td class="right nowrap" data-diff="${i}">${signedQty(diff(l), l.p.unit)}</td>
+      <td><button type="button" class="icon-btn" data-rm="${i}">✕</button></td></tr>`).join("")
+      || `<tr><td colspan="5" class="muted">Tovarni skanerlang yoki qidiring</td></tr>`;
+    $("#dtotal", view).textContent = money(total());
+    $$("#dlines input", view).forEach((inp) => inp.addEventListener("input", () => {
+      const l = lines[+inp.dataset.i];
+      l.value = inp.value;
+      $(`[data-diff="${inp.dataset.i}"]`, view).innerHTML = signedQty(diff(l), l.p.unit);
+      $("#dtotal", view).textContent = money(total());
+    }));
+    $$("[data-rm]", view).forEach((b) => b.addEventListener("click", () => { lines.splice(+b.dataset.rm, 1); draw(); }));
+  };
+  productSearch($("#dsearch", view), (p) => {
+    let i = lines.findIndex((x) => x.p.id === p.id);
+    if (i < 0) {
+      lines.push({ p, value: isCount ? p.stock : 1 });
+      i = lines.length - 1;
+    }
+    draw();
+    const inp = $(`#dlines input[data-i="${i}"]`, view);
+    if (inp) inp.select();
+  }).focus();
+  $("#dform", view).addEventListener("submit", safe(async (e) => {
+    e.preventDefault();
+    if (!lines.length) throw new Error("Tovar qo'shing");
+    const items = lines.map((l) => isCount ? { product_id: l.p.id, actual: l.value } : { product_id: l.p.id, qty: l.value });
+    const r = await api("POST", isCount ? "/api/stock/count" : "/api/stock/writeoff", { items, comment: e.target.comment.value });
+    toast(`Saqlandi ✅ ${r.lines.length} xil tovar qoldig'i tuzatildi`);
+    router();
+  }));
+  draw();
+}
+
+// ------------------------------------------------------------ mahsulotlar
+
+async function viewProducts() {
+  await loadMenu();
+  const params = new URLSearchParams(location.hash.split("?")[1] || "");
+  const q = (params.get("q") || "").toLowerCase();
+  const list = state.products.filter((p) => !q || p.name.toLowerCase().indexOf(q) >= 0 || (p.barcode || "") === q);
+  const view = layout(`
+    <div class="two-col products-page">
+      <div class="panel">
+        <div class="toolbar"><h2>Kategoriyalar</h2><button class="btn primary small" id="add-cat">+ Qo'shish</button></div>
+        <table class="list">
+          ${state.categories.map((c) => `
+            <tr><td>${esc(c.name)}</td>
+              <td class="right nowrap">
+                <button class="btn small" data-edit-cat="${c.id}">✏️</button>
+                <button class="btn small danger" data-del-cat="${c.id}">🗑</button>
+              </td></tr>`).join("") || `<tr><td class="muted">Kategoriya yo'q</td></tr>`}
+        </table>
+      </div>
+      <div class="panel">
+        <div class="toolbar"><h2>Mahsulotlar <span class="muted">${state.products.length}</span></h2>
+          <form id="psearch" class="picker-search" style="flex:1;max-width:280px">${icon("search")}<input name="q" value="${esc(params.get("q") || "")}" placeholder="Nomi yoki shtrix-kod"></form>
+          <button class="btn small" id="import-prod">${icon("upload")} Import</button>
+          <button class="btn primary small" id="add-prod">+ Mahsulot</button></div>
+        <div class="table-scroll"><table class="list">
+          <thead><tr><th></th><th>Nomi</th><th>Shtrix-kod</th><th>Kategoriya</th><th class="right">Qoldiq</th>
+            <th class="right">Tannarx</th><th class="right">Narx</th><th class="right">Ustama</th><th></th></tr></thead>
+          <tbody>
+            ${list.map((p) => `
+              <tr><td class="thumb-cell">${p.image ? `<img class="thumb" src="/uploads/${encodeURIComponent(p.image)}" alt="">` : `<div class="thumb empty">${icon("box")}</div>`}</td>
+                <td><b>${esc(p.name)}</b></td><td class="muted">${esc(p.barcode || "—")}</td><td>${esc(p.category_name || "—")}</td>
+                <td class="right">${stockBadge(p)}</td>
+                <td class="right muted">${p.cost ? money(p.cost) : "—"}</td>
+                <td class="right">${money(p.price)}${isWeight(p) ? `<small class="muted">/${UNITS[p.unit]}</small>` : ""}</td>
+                <td class="right">${p.cost ? Math.round((p.price - p.cost) / p.cost * 100) + "%" : "—"}</td>
+                <td class="right nowrap">
+                  <button class="btn small" data-edit-prod="${p.id}">✏️</button>
+                  <button class="btn small danger" data-del-prod="${p.id}">🗑</button>
+                </td></tr>`).join("") || `<tr><td colspan="9" class="muted">Mahsulot yo'q</td></tr>`}
+          </tbody>
+        </table></div>
+      </div>
+    </div>`);
+
+  const catForm = (c = {}) => openModal(`
+    <form id="f"><div class="modal-head"><h2>${c.id ? "Kategoriyani tahrirlash" : "Yangi kategoriya"}</h2>
+      <button type="button" class="icon-btn" data-close>✕</button></div>
+      <label><span>Nomi</span><input name="name" value="${esc(c.name || "")}" required></label>
+      <label><span>Tartib raqami</span><input name="sort" type="number" value="${ifNull(c.sort, state.categories.length)}"></label>
+      <div class="actions"><button type="button" class="btn" data-close>Bekor</button><button class="btn primary">Saqlash</button></div>
+    </form>`, (m) => $("#f", m).addEventListener("submit", safe(async (e) => {
+    e.preventDefault();
+    await api(c.id ? "PUT" : "POST", "/api/categories" + (c.id ? "/" + c.id : ""), formData(e.target));
+    closeModal();
+    toast("Saqlandi");
+    viewProducts();
+  })));
+
+  const prodForm = (p = {}) => openModal(`
+    <form id="f" class="product-form"><div class="modal-head"><h2>${p.id ? "Mahsulotni tahrirlash" : "Yangi mahsulot"}</h2>
+      <button type="button" class="icon-btn" data-close>✕</button></div>
+      <label><span>Nomi *</span><input name="name" value="${esc(p.name || "")}" placeholder="Masalan: Coca-Cola 1.5 l" required></label>
+      <label><span>Shtrix-kod</span>
+        <div class="row-input"><input name="barcode" value="${esc(p.barcode || "")}" placeholder="Skanerlang yoki yozing" autocomplete="off">
+          <button type="button" class="btn small" id="gen-code" title="Shtrix-kodi yo'q tovar uchun ichki kod">Kod yaratish</button></div></label>
+      <div class="grid-2">
+        <label><span>Kategoriya</span>
+          <select name="category_id"><option value="">— Kategoriyasiz —</option>
+            ${state.categories.map((c) => `<option value="${c.id}" ${c.id === p.category_id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}
+          </select></label>
+        <label><span>O'lchov birligi</span>
+          <select name="unit">${Object.keys(UNITS).map((u) => `<option value="${u}" ${u === (p.unit || "dona") ? "selected" : ""}>${UNITS[u]}</option>`).join("")}</select></label>
+        <label><span>Tannarxi (so'm)</span><input name="cost" type="number" min="0" value="${p.cost || ""}" placeholder="0"></label>
+        <label><span>Sotish narxi (so'm) *</span><input name="price" type="number" min="0" value="${ifNull(p.price, "")}" required></label>
+        <label><span>Minimal qoldiq <i>(shundan kam bo'lsa ogohlantiradi)</i></span><input name="min_stock" type="number" step="any" min="0" value="${p.min_stock || ""}" placeholder="0"></label>
+        ${p.id ? `<label><span>Qoldiq</span><input value="${fmtQty(p.stock)} ${UNITS[p.unit]}" disabled>
+          <small class="muted">Kirim yoki inventarizatsiya orqali o'zgaradi</small></label>`
+          : `<label><span>Boshlang'ich qoldiq</span><input name="stock" type="number" step="any" min="0" placeholder="0"></label>`}
+      </div>
+      <div class="muted" id="margin"></div>
+      <div class="image-field">
+        <div class="image-preview" id="img-preview"></div>
+        <div>
+          <span class="field-label">Rasmi <i>(ixtiyoriy)</i></span>
+          <label class="btn small file-btn">📷 Rasm tanlash<input type="file" id="img-input" accept="image/*" hidden></label>
+          <button type="button" class="btn small danger hidden" id="img-remove">O'chirish</button>
+        </div>
+      </div>
+      <div class="actions"><button type="button" class="btn" data-close>Bekor</button><button class="btn primary">Saqlash</button></div>
+    </form>`, (m) => {
+    let image = null;
+    let removeImage = false;
+    const preview = $("#img-preview", m);
+    const showPreview = () => {
+      const src = image || (!removeImage && p.image ? "/uploads/" + encodeURIComponent(p.image) : null);
+      preview.innerHTML = src ? `<img src="${src}" alt="">` : icon("box");
+      $("#img-remove", m).classList.toggle("hidden", !src);
+    };
+    const showMargin = () => {
+      const cost = +$("input[name=cost]", m).value || 0;
+      const price = +$("input[name=price]", m).value || 0;
+      $("#margin", m).textContent = cost && price ? `Foyda: ${money(price - cost)} · ustama ${Math.round((price - cost) / cost * 100)}%` : "";
+    };
+    $("#img-input", m).addEventListener("change", safe(async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      image = await resizeImage(file, 600);
+      removeImage = false;
+      showPreview();
+    }));
+    $("#img-remove", m).addEventListener("click", () => { image = null; removeImage = true; $("#img-input", m).value = ""; showPreview(); });
+    $("input[name=cost]", m).addEventListener("input", showMargin);
+    $("input[name=price]", m).addEventListener("input", showMargin);
+    $("#gen-code", m).addEventListener("click", safe(async () => {
+      $("input[name=barcode]", m).value = (await api("GET", "/api/products/new-barcode")).barcode;
+    }));
+    // skaner Enter bossa forma yuborilmasin - keyingi maydonga o'tamiz
+    $("input[name=barcode]", m).addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); $("select[name=category_id]", m).focus(); }
+    });
+    showPreview();
+    showMargin();
+    $("#f", m).addEventListener("submit", safe(async (e) => {
+      e.preventDefault();
+      const data = formData(e.target);
+      if (image) data.image = image;
+      if (removeImage) data.remove_image = true;
+      await api(p.id ? "PUT" : "POST", "/api/products" + (p.id ? "/" + p.id : ""), data);
+      closeModal();
+      toast("Saqlandi");
+      viewProducts();
+    }));
+  });
+
+  $("#psearch", view).addEventListener("submit", (e) => {
+    e.preventDefault();
+    const v = e.target.q.value.trim();
+    go("#/products" + (v ? "?q=" + encodeURIComponent(v) : ""));
+  });
+  $("#add-cat", view).addEventListener("click", () => catForm());
+  $("#add-prod", view).addEventListener("click", () => prodForm());
+  $("#import-prod", view).addEventListener("click", () => importModal("products", "Mahsulotlarni import qilish", viewProducts));
+  $$("[data-edit-cat]", view).forEach((b) => b.addEventListener("click", () =>
+    catForm(state.categories.find((c) => c.id === +b.dataset.editCat))));
+  $$("[data-edit-prod]", view).forEach((b) => b.addEventListener("click", () =>
+    prodForm(state.products.find((p) => p.id === +b.dataset.editProd))));
+  $$("[data-del-cat]", view).forEach((b) => b.addEventListener("click", safe(async () => {
+    if (!confirm("Kategoriyani o'chirasizmi?")) return;
+    await api("DELETE", "/api/categories/" + b.dataset.delCat);
+    viewProducts();
+  })));
+  $$("[data-del-prod]", view).forEach((b) => b.addEventListener("click", safe(async () => {
+    if (!confirm("Mahsulotni o'chirasizmi? (sotuvlar tarixi saqlanadi)")) return;
+    await api("DELETE", "/api/products/" + b.dataset.delProd);
+    viewProducts();
+  })));
+}
+
+// ------------------------------------------------------------ xodimlar (admin)
+
+const PERMISSION_LIST = [
+  ["cashier", "cashier", "Kassa (sotuv, qaytarish)"],
+  ["products", "box", "Mahsulotlar"],
+  ["warehouse", "warehouse", "Ombor (kirim, inventarizatsiya)"],
+  ["reports", "reports", "Hisobot"],
+  ["crm", "crm", "CRM (mijozlar, nasiyalar)"],
+  ["finance", "finance", "Moliya (kassa, kirim-chiqim)"],
+  ["users", "users", "Xodimlar"],
+  ["settings", "settings", "Sozlamalar"],
+  ["journal", "journal", "Jurnal (barcha amallar)"],
+  ["integrations", "plug", "Integratsiyalar (Telegram)"],
+];
+
+async function viewUsers() {
+  const users = await api("GET", "/api/users");
+  const active = users.filter((u) => u.active);
+  const count = (role) => active.filter((u) => u.role === role).length;
+  const initials = (u) => ((u.first_name || "")[0] || "") + ((u.last_name || "")[0] || "");
+  const view = layout(`
+    <div class="panel">
+      <div class="toolbar"><h2>Xodimlar</h2><button class="btn primary" id="add">+ Xodim qo'shish</button></div>
+      <table class="list users-table">
+        <thead><tr><th>#</th><th>Ismi</th><th>Telefon</th><th>Ruxsatlar</th><th>Parol</th><th>Holati</th><th></th></tr></thead>
+        <tbody>
+          ${users.map((u, i) => `
+            <tr class="${u.active ? "" : "inactive"}">
+              <td class="muted">${i + 1}</td>
+              <td><div class="person"><span class="avatar-sm role-${u.role}">${esc(initials(u).toUpperCase())}</span>
+                ${esc(u.full_name)}</div></td>
+              <td>${esc(u.phone || "—")}</td>
+              <td class="muted">${u.role === "admin" ? `<span class="role-badge role-admin">Administrator</span>`
+                : `${u.permissions.length} / ${PERMISSION_LIST.length}`}</td>
+              <td>${u.has_pin ? `<span class="muted">••••</span>` : `<span class="badge off">o'rnatilmagan</span>`}</td>
+              <td>${u.active ? `<span class="badge">Faol</span>` : `<span class="badge off">Bloklangan</span>`}</td>
+              <td class="right" style="white-space:nowrap">
+                <button class="btn small" data-edit="${u.id}">✏️</button>
+                ${u.id !== state.user.id && u.active ? `<button class="btn small danger" data-del="${u.id}">🗑</button>` : ""}
+              </td>
+            </tr>`).join("")}
+        </tbody>
+      </table>
+      <p class="muted users-summary">Jami: ${active.length} ta xodim · Administrator: ${count("admin")}</p>
+    </div>`);
+
+  $("#add", view).addEventListener("click", () => userForm());
+  $$("[data-edit]", view).forEach((b) => b.addEventListener("click", () =>
+    userForm(users.find((u) => u.id === +b.dataset.edit))));
+  $$("[data-del]", view).forEach((b) => b.addEventListener("click", safe(async () => {
+    const u = users.find((x) => x.id === +b.dataset.del);
+    if (!confirm(`${u.full_name} bloklansinmi? U tizimga kira olmaydi (tarixi saqlanadi).`)) return;
+    await api("DELETE", "/api/users/" + u.id);
+    toast("Xodim bloklandi");
+    viewUsers();
+  })));
+}
+
+function userForm(u = null) {
+  const isNew = !u;
+  u = u || { role: "staff", permissions: ["tables"], active: 1 };
+  const isAdmin = u.role === "admin";
+  const canAdmin = state.user.role === "admin";
+  const name = [u.first_name, u.last_name].filter(Boolean).join(" ") || u.full_name || "";
+  openModal(`
+    <form id="f" class="user-form">
+      <div class="modal-head"><h2>${isNew ? "Yangi xodim" : "Xodimni tahrirlash"}</h2>
+        <button type="button" class="icon-btn" data-close aria-label="Yopish">✕</button></div>
+      <div class="grid-3">
+        <label><span>Telefon raqami *</span><input name="phone" type="tel" required value="${esc(u.phone || "")}" placeholder="+998 90 123 45 67"></label>
+        <label><span>Ismi *</span><input name="name" required value="${esc(name)}" placeholder="Masalan: Aziz"></label>
+        <label><span>${isNew ? "Parol * (4 ta raqam)" : "Yangi parol"}${!isNew && !u.has_pin ? ` <em class="amount-out">o'rnatilmagan</em>` : ""}</span>
+          <input name="pin" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="off" ${isNew ? "required" : ""}
+            placeholder="${isNew ? "Masalan: 2580" : "O'zgartirmaslik uchun bo'sh"}"></label>
+      </div>
+      <div class="perm-head">
+        <span class="field-label">🛡️ Bo'limlarga kirish ruxsati</span>
+      </div>
+      <div class="perm-box">
+        ${canAdmin || isAdmin ? `<label class="perm-item admin-toggle"><input type="checkbox" id="is-admin" ${isAdmin ? "checked" : ""}
+          ${u.id === state.user.id ? "disabled" : ""}>${icon("settings")}<span><b>Administrator</b> — barcha bo'limlarga kiradi</span></label>` : ""}
+        <div class="perm-tools">
+          <button type="button" class="btn small" id="perm-all">✅ Hammasini tanlash</button>
+          <button type="button" class="btn small" id="perm-none">✖ Hammasini olib tashlash</button>
+        </div>
+        <div class="perm-grid">
+          ${PERMISSION_LIST.map(([k, ic, pname]) => `
+            <label class="perm-item"><input type="checkbox" name="perm" value="${k}" ${u.permissions.includes(k) ? "checked" : ""}>
+              ${icon(ic)}<span>${pname}</span></label>`).join("")}
+        </div>
+      </div>
+      ${isNew ? "" : `<label class="check-line"><input type="checkbox" name="active" ${u.active ? "checked" : ""}> Faol (tizimga kira oladi)</label>`}
+      <div class="actions"><button type="button" class="btn" data-close>Bekor</button><button class="btn primary">💾 Saqlash</button></div>
+    </form>`, (m) => {
+    const boxes = $$("input[name=perm]", m);
+    const adminBox = $("#is-admin", m);
+    const admin = () => !!(adminBox && adminBox.checked);
+    const syncAdmin = () => {
+      boxes.forEach((b) => { b.disabled = admin(); if (admin()) b.checked = true; });
+      $("#perm-all", m).disabled = $("#perm-none", m).disabled = admin();
+    };
+    if (adminBox) adminBox.addEventListener("change", syncAdmin);
+    $("#perm-all", m).addEventListener("click", () => boxes.forEach((b) => { b.checked = true; }));
+    $("#perm-none", m).addEventListener("click", () => boxes.forEach((b) => { b.checked = false; }));
+    syncAdmin();
+    $("input[name=pin]", m).addEventListener("input", (e) => { e.target.value = e.target.value.replace(/\D/g, "").slice(0, 4); });
+
+    $("#f", m).addEventListener("submit", safe(async (e) => {
+      e.preventDefault();
+      const f = e.target;
+      // eski rollar (kassir, ofitsiant...) saqlanadi; yangi xodim - "Xodim"
+      const role = admin() ? "admin" : (u.role && u.role !== "admin" ? u.role : "staff");
+      const data = {
+        first_name: f.name.value.trim(), last_name: "", phone: f.phone.value,
+        role, permissions: boxes.filter((b) => b.checked).map((b) => b.value),
+      };
+      if (!data.permissions.length) throw new Error("Kamida bitta bo'limga ruxsat bering");
+      if (f.pin.value) {
+        if (!/^\d{4}$/.test(f.pin.value)) throw new Error("Parol 4 ta raqam bo'lishi kerak");
+        data.pin = f.pin.value;
+      }
+      if (!isNew) data.active = f.active.checked;
+      await api(isNew ? "POST" : "PUT", "/api/users" + (isNew ? "" : "/" + u.id), data);
+      closeModal();
+      toast("Saqlandi ✅");
+      if (!isNew && u.id === state.user.id) state.user = await api("GET", "/api/me");
+      viewUsers();
+    }));
+  });
+}
+
+function viewNoAccess() {
+  layout(`<div class="panel"><h2>Ruxsat yo'q</h2>
+    <p class="muted">Sizga hali birorta bo'limga ruxsat berilmagan. Administratorga murojaat qiling.</p></div>`);
+}
+
+// ------------------------------------------------------------ sozlamalar (admin)
+
+async function viewSettings() {
+  await loadSettings();
+  const network = await api("GET", "/api/network");
+  const s = state.settings;
+  layout(`
+    <form class="panel settings" id="f" style="max-width:640px">
+      <h2>⚙️ Sozlamalar</h2>
+      <label><span>Do'kon nomi (chekda chiqadi)</span><input name="shop_name" value="${esc(s.shop_name)}" required></label>
+      <label class="check-line"><input type="checkbox" name="allow_negative" ${s.allow_negative === "1" ? "checked" : ""}>
+        Omborda yo'q (qoldig'i yetmaydigan) tovarni ham sotishga ruxsat berish</label>
+      <p class="muted">Belgilanmasa, kassa qoldiqdan ko'p sotishga ruxsat bermaydi. Belgilansa, qoldiq minusga tushadi —
+        keyin kirim yoki inventarizatsiya bilan to'g'rilanadi.</p>
+      <div class="actions"><button class="btn primary">Saqlash</button></div>
+    </form>
+    <div class="panel network-panel" style="max-width:640px">
+      <h3>📶 Telefon, planshet va boshqa kompyuterlardan kirish</h3>
+      <p class="muted">Qurilma shu kompyuter bilan <b>bitta Wi-Fi / tarmoqda</b> bo'lsin. Brauzerda quyidagi manzilni oching:</p>
+      ${network.main ? `<div class="lan-url"><code>${esc(network.main)}</code>
+        <button type="button" class="btn small" data-copy="${esc(network.main)}">Nusxa olish</button></div>`
+        : `<p class="error">Kompyuter Wi-Fi yoki tarmoqqa ulanmagan ko'rinadi.</p>`}
+      ${network.others.length ? `<details class="muted"><summary>Boshqa manzillar (VPN, virtual adapterlar — odatda kerak emas)</summary>
+        ${network.others.map((u) => `<div><code>${esc(u)}</code></div>`).join("")}</details>` : ""}
+      <p><button type="button" class="btn" id="install-help">📲 Telefonga ilova qilib o'rnatish — yo'riqnoma</button></p>
+      <h4>Ochilmasa:</h4>
+      <ol class="muted help-list">
+        <li>Dastur papkasidagi <b>TARMOQQA_RUXSAT.bat</b> ni ishga tushiring va administrator ruxsatiga <b>"Да"</b> bosing.
+          U fayervolda ${network.port}-portni ochadi va Python uchun qo'yilgan taqiqni olib tashlaydi.</li>
+        <li>Telefonda <b>mobil internet emas, Wi-Fi</b> yoqilganini va aynan shu Wi-Fi'ga ulanganini tekshiring.</li>
+        <li>Mehmonlar (Guest) Wi-Fi'da qurilmalar bir-birini ko'rmaydi — asosiy Wi-Fi'ga ulaning.</li>
+        <li>Manzil boshida <b>http://</b> bo'lsin (https emas) va oxirida <b>:${network.port}</b> bo'lsin.</li>
+      </ol>
+    </div>`);
+
+  $("#install-help").addEventListener("click", showInstallHelp);
+  $$("[data-copy]").forEach((b) => b.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(b.dataset.copy);
+      toast("Nusxa olindi");
+    } catch {
+      toast(b.dataset.copy);
+    }
+  }));
+  $("#f").addEventListener("submit", safe(async (e) => {
+    e.preventDefault();
+    state.settings = await api("PUT", "/api/settings", {
+      shop_name: e.target.shop_name.value, allow_negative: e.target.allow_negative.checked });
+    toast("Saqlandi ✅");
+    viewSettings();
+  }));
+}
+
+// ------------------------------------------------------------ jurnal (barcha amallar tarixi)
+
+const JOURNAL_ICONS = { sales: "sales", warehouse: "warehouse", finance: "finance", crm: "crm", products: "box",
+  users: "users", settings: "settings", auth: "logout" };
+// So'rov maydonlari nomlari (batafsil oynada)
+const FIELD_NAMES = {
+  name: "Nomi", price: "Narxi", cost: "Tannarxi", amount: "Summa", method: "Usul", account: "Hisob", phone: "Telefon",
+  comment: "Izoh", discount: "Chegirma", reason: "Sabab", qty: "Soni", gender: "Jinsi", due_date: "To'lov muddati",
+  balance: "Yangi balans", category_id: "Kategoriya ID", printer_id: "Printer ID", product_id: "Mahsulot ID",
+  customer_id: "Mijoz ID", supplier_id: "Ta'minotchi ID", type_id: "Tranzaksiya turi ID", direction: "Yo'nalish",
+  first_name: "Ism", last_name: "Familiya", full_name: "F.I.Sh", username: "Login", role: "Lavozim",
+  permissions: "Ruxsatlar", active: "Faol", password: "Parol", image: "Rasm", file_name: "Fayl", data: "Fayl",
+  shop_name: "Do'kon nomi", allow_negative: "Minusga sotish", barcode: "Shtrix-kod", unit: "Birlik", stock: "Qoldiq",
+  min_stock: "Minimal qoldiq", actual: "Haqiqiy qoldiq", paid: "To'landi", items: "Tovarlar", sort: "Tartib",
+  kind: "Turi", address: "Manzil", port: "Port", width: "Qog'oz kengligi", enabled: "Yoqilgan", token: "Token",
+  chats: "Chatlar", categories: "Bo'limlar", type: "Turi", remove_image: "Rasmni olib tashlash",
+};
+
+function requestValue(v) {
+  if (v === true) return "ha";
+  if (v === false) return "yo'q";
+  if (v === null || v === undefined || v === "") return "—";
+  if (Array.isArray(v)) return v.map((x) => typeof x === "object" ? (x.title || x.name || x.id) : x).join(", ") || "—";
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v);
+}
+
+function journalDetail(id) {
+  return api("GET", `/api/journal/${id}`).then((j) => {
+    const d = j.details || {};
+    const request = Object.keys(d.request || {});
+    const orderId = (j.entity || "").indexOf("order:") === 0 ? j.entity.slice(6) : null;
+    openModal(`
+      <div class="journal-detail">
+        <div class="modal-head"><h2><span class="jr-icon cat-${esc(j.category)}">${icon(JOURNAL_ICONS[j.category] || "list")}</span>
+          ${esc(j.title)}</h2><button type="button" class="icon-btn" data-close>✕</button></div>
+        <div class="jd-meta">
+          <div><small>Vaqti</small><b>${esc(j.created_at)}</b></div>
+          <div><small>Kim qildi</small><b>${esc(j.user_name || "—")}</b>
+            ${j.username ? `<span class="muted">${esc(j.username)} · ${ROLE_NAMES[j.role] || ""}</span>` : ""}</div>
+          <div><small>Bo'lim</small><b>${esc(j.category_name)}</b></div>
+        </div>
+        ${j.summary ? `<p class="jd-summary">${esc(j.summary)}</p>` : ""}
+        ${(d.fields || []).length ? `
+          <table class="list jd-fields">${d.fields.map(([k, v]) =>
+            `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`).join("")}</table>` : ""}
+        ${(d.items || []).length ? `
+          <h3>Tovarlar</h3>
+          <table class="list jd-items"><thead><tr><th>Nomi</th><th class="right">Soni</th>
+            ${d.items[0].price !== undefined ? `<th class="right">Narxi</th><th class="right">Summa</th>` : ""}</tr></thead>
+            <tbody>${d.items.map((i) => `<tr><td>${esc(i.name)}</td><td class="right">${i.qty}</td>
+              ${i.price !== undefined ? `<td class="right">${money(i.price)}</td><td class="right">${money(i.price * i.qty)}</td>` : ""}</tr>`).join("")}
+            </tbody></table>` : ""}
+        ${request.length ? `
+          <details class="jd-request"><summary>Kiritilgan ma'lumotlar</summary>
+            <table class="list">${request.map((k) => `<tr><th>${esc(FIELD_NAMES[k] || k)}</th>
+              <td>${esc(requestValue(d.request[k]))}</td></tr>`).join("")}</table>
+          </details>` : ""}
+        <div class="actions">
+          ${orderId && can("cashier", "reports", "finance") ? `<button type="button" class="btn" id="open-sale">Chekni ochish</button>` : ""}
+          <button type="button" class="btn primary" data-close>Yopish</button>
+        </div>
+      </div>`, (m) => {
+      const open = $("#open-sale", m);
+      if (open) open.addEventListener("click", () => saleModal(orderId).catch((e) => toast(e.message, true)));
+    });
+  });
+}
+
+async function viewJournal() {
+  const params = new URLSearchParams(location.hash.split("?")[1] || "");
+  const q = new URLSearchParams();
+  ["from", "to", "user_id", "category", "q"].forEach((k) => { if (params.get(k)) q.set(k, params.get(k)); });
+  const d = await api("GET", "/api/journal?" + q.toString());
+  const sel = (name, options, value) => `<select name="${name}" style="width:auto">${options.map(([k, v]) =>
+    `<option value="${k}" ${String(k) === (value || "") ? "selected" : ""}>${esc(v)}</option>`).join("")}</select>`;
+  const cats = Object.keys(d.categories).map((k) => [k, d.categories[k]]);
+  const rowHtml = (i) => `
+    <tr class="clickable" data-id="${i.id}">
+      <td class="nowrap">${esc(i.created_at.slice(0, 10))}<br><b>${esc(i.created_at.slice(11, 16))}</b></td>
+      <td>${esc(i.user_name || "—")}</td>
+      <td><span class="jr-cat cat-${esc(i.category)}">${icon(JOURNAL_ICONS[i.category] || "list")}${esc(d.categories[i.category] || i.category)}</span></td>
+      <td><b>${esc(i.title)}</b><div class="muted jr-summary">${esc(i.summary || "")}</div></td>
+      <td class="right jr-more">${icon("chevron")}</td>
+    </tr>`;
+  const view = layout(`
+    <div class="toolbar"><h2>Jurnal</h2><span class="muted">${d.total} ta amal</span></div>
+    <form class="filters" id="filters">
+      <input type="date" name="from" value="${d.from}" style="width:auto">
+      <input type="date" name="to" value="${d.to}" style="width:auto">
+      ${sel("user_id", [["", "Barcha xodimlar"], ...d.users.map((u) => [u.id, u.full_name])], params.get("user_id"))}
+      ${sel("category", [["", "Barcha bo'limlar"], ...cats], params.get("category"))}
+      <input type="search" name="q" placeholder="Qidirish: tovar, mijoz, summa..." value="${esc(params.get("q") || "")}" style="width:220px">
+      <button class="btn primary">Ko'rsatish</button>
+    </form>
+    <div class="panel">
+      ${d.items.length ? `
+        <div class="table-scroll"><table class="list journal-table">
+          <thead><tr><th>Vaqt</th><th>Xodim</th><th>Bo'lim</th><th>Amal</th><th></th></tr></thead>
+          <tbody id="jr-body">${d.items.map(rowHtml).join("")}</tbody>
+        </table></div>
+        ${d.total > d.items.length ? `<p style="text-align:center"><button class="btn" id="more">Yana ko'rsatish</button></p>` : ""}`
+        : `<p class="muted">Tanlangan davrda amallar yo'q</p>`}
+    </div>`);
+  $("#filters", view).addEventListener("submit", (e) => {
+    e.preventDefault();
+    const f = new URLSearchParams();
+    new FormData(e.target).forEach((v, k) => { if (v) f.set(k, v); });
+    go("#/journal?" + f.toString());
+  });
+  view.addEventListener("click", (e) => {
+    const tr = e.target.closest("tr[data-id]");
+    if (tr) journalDetail(tr.dataset.id).catch((err) => toast(err.message, true));
+  });
+  let offset = d.items.length;
+  const more = $("#more", view);
+  if (more) more.addEventListener("click", safe(async () => {
+    q.set("offset", offset);
+    const next = await api("GET", "/api/journal?" + q.toString());
+    $("#jr-body", view).insertAdjacentHTML("beforeend", next.items.map(rowHtml).join(""));
+    offset += next.items.length;
+    if (offset >= next.total || !next.items.length) more.remove();
+  }));
+}
+
+// ------------------------------------------------------------ integratsiyalar
+
+// Yangi integratsiya qo'shish: shu ro'yxatga yozuv va (tayyor bo'lsa) sahifa
+const INTEGRATIONS = [
+  { key: "telegram", icon: "telegram", name: "Telegram bot", href: "#/integrations/telegram",
+    text: "Xodimlar uchun: sotuv, kirim-chiqim, qarz va boshqa amallar haqida Telegram'ga xabar keladi." },
+  { key: "customer_bot", icon: "crm", name: "Mijozlar boti", href: "#/integrations/customer-bot",
+    text: "Mijozlar uchun: xarid cheki, qarz balansi va siz yuborgan xabarlar Telegram'da." },
+];
+
+async function viewIntegrations() {
+  const list = await api("GET", "/api/integrations");
+  const status = {};
+  list.forEach((i) => { status[i.key] = i; });
+  layout(`
+    <div class="toolbar"><h2>Integratsiyalar</h2></div>
+    <div class="integration-grid">
+      ${INTEGRATIONS.map((it) => {
+        const s = status[it.key];
+        const badge = it.soon ? `<span class="badge">Tez orada</span>`
+          : s && s.enabled ? `<span class="badge ok">Ulangan</span>` : `<span class="badge">Ulanmagan</span>`;
+        const tag = it.soon ? "div" : "a";
+        return `
+          <${tag} class="integration-card ${it.soon ? "soon" : ""}" ${it.soon ? "" : `href="${it.href}"`}>
+            <div class="ic-top"><span class="ic-logo ic-${it.key}">${icon(it.icon)}</span>${badge}</div>
+            <b>${esc(it.name)}</b>
+            <p class="muted">${esc(it.text)}</p>
+            ${it.soon ? "" : `<span class="ic-link">Sozlash ${icon("chevron")}</span>`}
+          </${tag}>`;
+      }).join("")}
+    </div>`);
+}
+
+async function viewTelegram(cfgArg) {
+  if (state.leaveHook) { state.leaveHook(); state.leaveHook = null; }  // oldingi kutish taymeri
+  const cfg = cfgArg || await api("GET", "/api/integrations/telegram");
+  const botLink = cfg.bot ? `https://t.me/${cfg.bot.username}` : "";
+  let body;
+  if (!cfg.token_set) {
+    // 1-qadam: faqat token
+    body = `
+      <section class="panel tg-card">
+        <div class="tg-hero">${icon("telegram")}</div>
+        <h3>Telegram botni ulash</h3>
+        <p class="muted">Telegram'da <a href="https://t.me/BotFather" target="_blank" rel="noopener"><b>@BotFather</b></a> ni oching,
+          <b>/newbot</b> yozing va bot nomini bering. U bergan <b>tokenni</b> shu yerga qo'ying.</p>
+        <form id="tg-connect" class="row-input">
+          <input id="tg-token" autocomplete="off" spellcheck="false" placeholder="123456789:AAH..." required>
+          <button class="btn primary">Ulash</button>
+        </form>
+      </section>`;
+  } else if (!cfg.chats.length) {
+    // 2-qadam: botga /start
+    body = `
+      <section class="panel tg-card">
+        <div class="tg-hero">${icon("telegram")}</div>
+        <h3>@${esc(cfg.bot ? cfg.bot.username : "bot")} ulandi. Endi botga /start yozing</h3>
+        <p class="muted">Xabarlar kimga borishi kerak bo'lsa, o'sha odam botni ochib <b>Start</b> ni bossin.
+          Guruhga kelishi kerak bo'lsa — botni guruhga qo'shing va guruhda biror narsa yozing.</p>
+        ${botLink ? `<a class="btn primary big" href="${esc(botLink)}" target="_blank" rel="noopener">${icon("telegram")} Botni ochish</a>` : ""}
+        <p class="tg-wait"><span class="spinner"></span> /start kutilmoqda...</p>
+        <button type="button" class="btn small" id="tg-disconnect">Boshqa bot ulash</button>
+      </section>`;
+  } else {
+    // Ulangan
+    body = `
+      <section class="panel tg-card">
+        <div class="tg-connected">
+          <span class="tg-hero small">${icon("telegram")}</span>
+          <div><b>@${esc(cfg.bot ? cfg.bot.username : "bot")}</b>
+            <small class="muted">${cfg.enabled ? "Xabarlar yuborilmoqda" : "To'xtatilgan"}</small></div>
+          <label class="tg-switch"><input type="checkbox" id="tg-enabled" ${cfg.enabled ? "checked" : ""}><span class="slider"></span></label>
+        </div>
+        ${cfg.status.last_error ? `<div class="notice error-notice">⚠️ ${esc(cfg.status.last_error)}</div>` : ""}
+        <h4>Xabar boradigan chatlar</h4>
+        <div class="tg-chat-list">${cfg.chats.map((c) => `
+          <div class="tg-chat">${icon(String(c.id).charAt(0) === "-" ? "users" : "crm")}
+            <div><b>${esc(c.title || c.id)}</b></div>
+            <button type="button" class="icon-btn" data-remove="${esc(c.id)}" title="Olib tashlash">✕</button></div>`).join("")}
+        </div>
+        <p class="muted small-note">Yana qo'shish: ${botLink ? `<a href="${esc(botLink)}" target="_blank" rel="noopener">botni oching</a>` : "botni oching"}
+          va /start bosing — chat o'zi qo'shiladi.</p>
+        <details class="tg-more">
+          <summary>Qaysi xabarlar boradi</summary>
+          <div class="perm-grid">${Object.keys(cfg.all_categories).map((k) => `
+            <label class="perm-item"><input type="checkbox" name="tg-cat" value="${k}" ${cfg.categories.indexOf(k) >= 0 ? "checked" : ""}>
+              ${icon(JOURNAL_ICONS[k] || "list")}<span>${esc(cfg.all_categories[k])}</span></label>`).join("")}</div>
+        </details>
+        <div class="actions">
+          <button type="button" class="btn danger-text" id="tg-disconnect">Uzish</button>
+          <button type="button" class="btn" id="tg-test">Sinov xabari</button>
+        </div>
+      </section>`;
+  }
+  const view = layout(`
+    <div class="toolbar"><a class="btn small" href="#/integrations">← Integratsiyalar</a><h2>Telegram bot</h2></div>
+    ${body}`);
+
+  const save = async (patch) => {
+    const next = await api("PUT", "/api/integrations/telegram", Object.assign({
+      enabled: cfg.enabled, chats: cfg.chats, categories: cfg.categories }, patch));
+    viewTelegram(next);
+  };
+  const connect = $("#tg-connect", view);
+  if (connect) connect.addEventListener("submit", safe(async (e) => {
+    e.preventDefault();
+    const btn = $("button", connect);
+    btn.disabled = true;
+    try {
+      const next = await api("POST", "/api/integrations/telegram/connect", { token: $("#tg-token", view).value.trim() });
+      toast("Bot ulandi ✅");
+      viewTelegram(next);
+    } finally { btn.disabled = false; }
+  }));
+  if (cfg.token_set && !cfg.chats.length) {
+    // /start yozilishini kutamiz - har 3 soniyada tekshiriladi
+    const timer = setInterval(async () => {
+      try {
+        const next = await api("POST", "/api/integrations/telegram/link", {});
+        if (next.added.length) {
+          clearInterval(timer);
+          toast("Ulandi: " + next.added.join(", ") + " ✅");
+          viewTelegram(next);
+        }
+      } catch (e) { /* internet yo'q - keyinroq yana urinamiz */ }
+    }, 3000);
+    state.leaveHook = () => clearInterval(timer);
+  }
+  if (cfg.chats.length && cfg.token_set) {
+    // ulangan sahifada ham yangi /start yozganlar o'zi qo'shiladi (bir marta tekshiriladi)
+    api("POST", "/api/integrations/telegram/link", {}).then((next) => {
+      if (next.added.length && location.hash === "#/integrations/telegram") {
+        toast("Yangi chat qo'shildi: " + next.added.join(", "));
+        viewTelegram(next);
+      }
+    }).catch(() => {});
+  }
+  const enabled = $("#tg-enabled", view);
+  if (enabled) enabled.addEventListener("change", safe(() => save({ enabled: enabled.checked })));
+  $$("[data-remove]", view).forEach((b) => b.addEventListener("click", safe(() => {
+    if (!confirm("Bu chatga xabar yuborish to'xtatilsinmi?")) return;
+    const chats = cfg.chats.filter((c) => String(c.id) !== b.dataset.remove);
+    return save({ chats, enabled: cfg.enabled && chats.length > 0 });
+  })));
+  $$("input[name=tg-cat]", view).forEach((i) => i.addEventListener("change", safe(async () => {
+    const categories = $$("input[name=tg-cat]:checked", view).map((x) => x.value);
+    cfg.categories = categories;
+    await api("PUT", "/api/integrations/telegram", { enabled: cfg.enabled, chats: cfg.chats, categories });
+    toast("Saqlandi");
+  })));
+  const test = $("#tg-test", view);
+  if (test) test.addEventListener("click", safe(async () => {
+    await api("POST", "/api/integrations/telegram/test", {});
+    toast("Sinov xabari yuborildi — Telegram'ni tekshiring ✅");
+  }));
+  const disc = $("#tg-disconnect", view);
+  if (disc) disc.addEventListener("click", safe(async () => {
+    if (cfg.chats.length && !confirm("Telegram bot uzilsinmi? Xabarlar boshqa yuborilmaydi.")) return;
+    viewTelegram(await api("DELETE", "/api/integrations/telegram"));
+  }));
+}
+
+// Mijozlarga Telegram bot orqali xabar yuborish: hammaga yoki tanlanganlarga
+async function messageModal(preselected) {
+  const linked = await api("GET", "/api/customers?telegram=1");
+  if (!linked.length) {
+    toast("Hali birorta mijoz botga ulanmagan. Mijoz botni ochib telefon raqamini yuborishi kerak", true);
+    return;
+  }
+  const chosen = {};
+  (preselected || []).forEach((c) => { chosen[c.id] = true; });
+  const single = preselected && preselected.length === 1;
+  openModal(`
+    <form id="msg-form" class="message-form">
+      <div class="modal-head"><h2>${icon("telegram")} ${single ? "Xabar: " + esc(preselected[0].name) : "Mijozlarga xabar"}</h2>
+        <button type="button" class="icon-btn" data-close>✕</button></div>
+      ${single ? "" : `
+        <div class="target-pick">
+          <label><input type="radio" name="target" value="all" ${preselected ? "" : "checked"}><span>Barcha ulangan mijozlar (${linked.length} ta)</span></label>
+          <label><input type="radio" name="target" value="some" ${preselected ? "checked" : ""}><span>Tanlanganlar</span></label>
+        </div>
+        <div id="pick-box" class="${preselected ? "" : "hidden"}">
+          <div class="picker-search">${icon("search")}<input id="pick-q" placeholder="Qidirish" autocomplete="off"></div>
+          <div class="pick-list">${linked.map((c) => `
+            <label class="pick-row" data-q="${esc((c.name + " " + c.phone).toLowerCase())}">
+              <input type="checkbox" value="${c.id}" ${chosen[c.id] ? "checked" : ""}>
+              <span><b>${esc(c.name)}</b> <small class="muted">${esc(formatPhone(c.phone))}</small></span></label>`).join("")}</div>
+        </div>`}
+      <label><span>Xabar matni</span><textarea name="text" rows="5" maxlength="3500" required
+        placeholder="Masalan: Hurmatli mijoz! Bugun barcha ichimliklarga 20% chegirma 🎉"></textarea></label>
+      <div class="actions"><button type="button" class="btn" data-close>Bekor</button>
+        <button class="btn primary">${icon("telegram")} Yuborish</button></div>
+    </form>`, (m) => {
+    const box = $("#pick-box", m);
+    $$("input[name=target]", m).forEach((r) => r.addEventListener("change", () =>
+      box.classList.toggle("hidden", $("input[name=target]:checked", m).value !== "some")));
+    const q = $("#pick-q", m);
+    if (q) q.addEventListener("input", () => {
+      const v = q.value.trim().toLowerCase();
+      $$(".pick-row", m).forEach((row) => row.classList.toggle("hidden", v && row.dataset.q.indexOf(v) < 0));
+    });
+    $("textarea", m).focus();
+    $("#msg-form", m).addEventListener("submit", safe(async (e) => {
+      e.preventDefault();
+      const body = { text: e.target.text.value };
+      if (single) body.customer_ids = [preselected[0].id];
+      else if ($("input[name=target]:checked", m).value === "all") body.all = true;
+      else body.customer_ids = $$(".pick-row input:checked", m).map((i) => +i.value);
+      const res = await api("POST", "/api/customers/message", body);
+      closeModal();
+      toast(`Xabar ${res.sent} ta mijozga yuborildi ✅`);
+    }));
+  });
+}
+
+async function viewCustomerBot(cfgArg) {
+  const cfg = cfgArg || await api("GET", "/api/integrations/customer-bot");
+  const botLink = cfg.bot ? `https://t.me/${cfg.bot.username}` : "";
+  const body = !cfg.token_set ? `
+      <section class="panel tg-card">
+        <div class="tg-hero">${icon("crm")}</div>
+        <h3>Mijozlar botini ulash</h3>
+        <p class="muted">Bu — mijozlaringiz uchun <b>alohida</b> bot. Telegram'da
+          <a href="https://t.me/BotFather" target="_blank" rel="noopener"><b>@BotFather</b></a> → <b>/newbot</b>
+          (masalan "Do'kon mijozlari" nomi bilan) va bergan tokenni shu yerga qo'ying.</p>
+        <form id="cb-connect" class="row-input">
+          <input id="cb-token" autocomplete="off" spellcheck="false" placeholder="123456789:AAH..." required>
+          <button class="btn primary">Ulash</button>
+        </form>
+        <h4>Mijoz botda nima ko'radi</h4>
+        <ul class="muted help-list">
+          <li>🧾 Savdoda mijoz tanlansa — xarid cheki darhol botga keladi</li>
+          <li>💰 <b>Balans</b> tugmasi — qancha qarzi borligi va to'lov muddatlari</li>
+          <li>✅ Qarz to'laganda — to'lov qabul qilingani haqida xabar</li>
+          <li>📢 Siz yuborgan xabarlar (aksiya, yangilik)</li>
+        </ul>
+      </section>` : `
+      <section class="panel tg-card">
+        <div class="tg-connected">
+          <span class="tg-hero small">${icon("crm")}</span>
+          <div><b>@${esc(cfg.bot ? cfg.bot.username : "bot")}</b>
+            <small class="muted">${cfg.enabled ? "Ishlamoqda" : "To'xtatilgan"}</small></div>
+          <label class="tg-switch"><input type="checkbox" id="cb-enabled" ${cfg.enabled ? "checked" : ""}><span class="slider"></span></label>
+        </div>
+        ${cfg.status.last_error ? `<div class="notice error-notice">⚠️ ${esc(cfg.status.last_error)}</div>` : ""}
+        <div class="cb-stats">
+          <div><b>${cfg.linked}</b><small class="muted">ulangan mijoz</small></div>
+          <div><b>${cfg.customers}</b><small class="muted">jami mijoz</small></div>
+          <div><b>${cfg.status.sent}</b><small class="muted">yuborilgan xabar</small></div>
+        </div>
+        <h4>Mijoz qanday ulanadi</h4>
+        <p class="muted">Mijoz botni ochadi → <b>Start</b> → <b>📱 Telefon raqamni yuborish</b>. Raqami CRM'dagi mijozga mos kelsa, o'zi ulanadi.
+          Havolani mijozlarga yuboring yoki kassaga QR qilib qo'ying:</p>
+        <div class="lan-url"><code>${esc(botLink)}</code>
+          <button type="button" class="btn small" data-copy="${esc(botLink)}">Nusxa olish</button></div>
+        <h4>Nimalar yuboriladi</h4>
+        <label class="perm-item"><input type="checkbox" id="cb-sales" ${cfg.notify_sales ? "checked" : ""}>
+          ${icon("sales")}<span>Xarid cheki (savdoda mijoz tanlanganda)</span></label>
+        <label class="perm-item" style="margin-top:6px"><input type="checkbox" id="cb-payments" ${cfg.notify_payments ? "checked" : ""}>
+          ${icon("debt")}<span>Qarz to'lovi qabul qilinganda</span></label>
+        <div class="actions">
+          <button type="button" class="btn danger-text" id="cb-disconnect">Uzish</button>
+          <button type="button" class="btn primary" id="cb-message">${icon("telegram")} Mijozlarga xabar yuborish</button>
+        </div>
+      </section>`;
+  const view = layout(`
+    <div class="toolbar"><a class="btn small" href="#/integrations">← Integratsiyalar</a><h2>Mijozlar boti</h2></div>
+    ${body}`);
+  const connect = $("#cb-connect", view);
+  if (connect) connect.addEventListener("submit", safe(async (e) => {
+    e.preventDefault();
+    const btn = $("button", connect);
+    btn.disabled = true;
+    try {
+      const next = await api("POST", "/api/integrations/customer-bot/connect", { token: $("#cb-token", view).value.trim() });
+      toast("Mijozlar boti ulandi ✅");
+      viewCustomerBot(next);
+    } finally { btn.disabled = false; }
+  }));
+  const save = (patch) => api("PUT", "/api/integrations/customer-bot", patch).then((next) => {
+    toast("Saqlandi");
+    viewCustomerBot(next);
+  });
+  const en = $("#cb-enabled", view);
+  if (en) en.addEventListener("change", safe(() => save({ enabled: en.checked })));
+  [["#cb-sales", "notify_sales"], ["#cb-payments", "notify_payments"]].forEach(([sel, key]) => {
+    const el = $(sel, view);
+    if (el) el.addEventListener("change", safe(() => { const p = {}; p[key] = el.checked; return save(p); }));
+  });
+  $$("[data-copy]", view).forEach((b) => b.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(b.dataset.copy); toast("Nusxa olindi"); } catch { toast(b.dataset.copy); }
+  }));
+  const msg = $("#cb-message", view);
+  if (msg) msg.addEventListener("click", () => messageModal());
+  const disc = $("#cb-disconnect", view);
+  if (disc) disc.addEventListener("click", safe(async () => {
+    if (!confirm("Mijozlar boti uzilsinmi? Mijozlarga xabarlar boshqa bormaydi.")) return;
+    viewCustomerBot(await api("DELETE", "/api/integrations/customer-bot"));
+  }));
+}
+
+// Sozlamalar > Chek: chekda nimalar chiqishini belgilash, o'ngda jonli namuna
+const RECEIPT_OPTIONS = [
+  ["show_logo", "Logo"], ["show_shop_name", "Do'kon nomi"], ["show_order_number", "Chek raqami"],
+  ["show_date", "Sana va vaqt"], ["show_cashier", "Kassir"], ["show_customer", "Mijoz"],
+  ["show_item_price", "Tovar narxi (miqdor × narx)"], ["show_discount", "Chegirma"], ["show_payment", "To'lov turi"],
+  ["show_change", "Berilgan pul va qaytim"],
+];
+
+async function viewReceiptSettings() {
+  await loadSettings();
+  const cfg = Object.assign({}, state.settings.receipt);
+  const sample = {
+    id: 125, status: "paid", closed_at: new Date().toISOString().slice(0, 10) + " 14:35", cashier_name: state.user.full_name,
+    customer_name: "Ali Valiyev", payment_method: "cash", given: 100000,
+    items: [{ name: "Coca-Cola 1.5 l", qty: 2, price: 14000, unit: "dona" }, { name: "Non", qty: 3, price: 4000, unit: "dona" },
+      { name: "Olma", qty: 1.25, price: 18000, unit: "kg" }],
+    subtotal: 62500, discount: 2500, total: 60000, returned: 0,
+  };
+  const view = layout(`
+    <div class="receipt-settings">
+      <form class="panel settings" id="rf">
+        <h2>🧾 Chek</h2>
+        <p class="muted">Chekda nimalar chiqishini belgilang. O'ngda natija darhol ko'rinadi.</p>
+        <div class="perm-grid">
+          ${RECEIPT_OPTIONS.map(([k, name]) => `
+            <label class="perm-item"><input type="checkbox" name="${k}" ${cfg[k] ? "checked" : ""}><span>${name}</span></label>`).join("")}
+        </div>
+        <label><span>Tepadagi matn (manzil, telefon...)</span>
+          <textarea name="header_text" rows="2" maxlength="300" placeholder="Masalan: Toshkent, Chilonzor 5\nTel: +998 90 123 45 67">${esc(cfg.header_text || "")}</textarea></label>
+        <label><span>Pastdagi matn</span>
+          <textarea name="footer_text" rows="2" maxlength="300" placeholder="Masalan: Xaridingiz uchun rahmat!">${esc(cfg.footer_text || "")}</textarea></label>
+        <span class="field-label">Qog'oz kengligi</span>
+        <div class="kind-switch">
+          <label class="role-card"><input type="radio" name="paper_width" value="80" ${cfg.paper_width !== 58 ? "checked" : ""}><span>80 mm</span></label>
+          <label class="role-card"><input type="radio" name="paper_width" value="58" ${cfg.paper_width === 58 ? "checked" : ""}><span>58 mm</span></label>
+        </div>
+        <div class="actions"><button class="btn primary">💾 Saqlash</button></div>
+      </form>
+      <div class="receipt-preview-wrap">
+        <span class="field-label">Namuna</span>
+        <div class="receipt-preview" id="preview"></div>
+      </div>
+    </div>`);
+  const form = $("#rf", view);
+  const read = () => {
+    const out = {};
+    RECEIPT_OPTIONS.forEach(([k]) => { out[k] = form[k].checked; });
+    out.header_text = form.header_text.value;
+    out.footer_text = form.footer_text.value;
+    out.paper_width = +$("input[name=paper_width]:checked", form).value;
+    return out;
+  };
+  const draw = () => {
+    const c = read();
+    const p = $("#preview", view);
+    p.className = "receipt-preview" + (c.paper_width === 58 ? " paper-58" : "");
+    p.innerHTML = receiptHtml(sample, c);
+  };
+  form.addEventListener("input", draw);
+  form.addEventListener("change", draw);
+  draw();
+  form.addEventListener("submit", safe(async (e) => {
+    e.preventDefault();
+    state.settings = await api("PUT", "/api/settings", { receipt: read() });
+    toast("Chek sozlamalari saqlandi ✅");
+  }));
+}
+
+// ------------------------------------------------------------ router
+
+const routes = [
+  [/^#\/dashboard$/, viewDashboard, ["reports"]],
+  [/^#\/pos$/, viewPOS, ["cashier"]],
+  [/^#\/products$/, viewProducts, ["products"]],
+  [/^#\/stock$/, viewStock, ["warehouse"]],
+  [/^#\/stock\/moves$/, viewMoves, ["warehouse"]],
+  [/^#\/stock\/count$/, () => viewStockDoc("count"), ["warehouse"]],
+  [/^#\/stock\/writeoff$/, () => viewStockDoc("writeoff"), ["warehouse"]],
+  [/^#\/purchases$/, viewPurchases, ["warehouse"]],
+  [/^#\/purchases\/new$/, viewPurchaseNew, ["warehouse"]],
+  [/^#\/crm\/customers$/, viewCustomers, ["crm"]],
+  [/^#\/crm\/debts$/, viewDebts, ["crm"]],
+  [/^#\/finance$/, viewFinanceCash, ["finance"]],
+  [/^#\/finance\/entries$/, viewFinanceEntries, ["finance"]],
+  [/^#\/finance\/types$/, viewFinanceTypes, ["finance"]],
+  [/^#\/finance\/balances$/, viewBalances, ["finance"]],
+  [/^#\/reports$/, viewReports, ["reports"]],
+  [/^#\/reports\/sales$/, viewSales, ["reports"]],
+  [/^#\/finance\/sales$/, viewSales, ["finance"]],
+  [/^#\/users$/, viewUsers, ["users"]],
+  [/^#\/settings$/, viewSettings, ["settings"]],
+  [/^#\/settings\/receipt$/, viewReceiptSettings, ["settings"]],
+  [/^#\/journal$/, viewJournal, ["journal"]],
+  [/^#\/integrations$/, viewIntegrations, ["integrations"]],
+  [/^#\/integrations\/telegram$/, viewTelegram, ["integrations"]],
+  [/^#\/integrations\/customer-bot$/, viewCustomerBot, ["integrations"]],
+  [/^#\/none$/, viewNoAccess],
+];
+
+async function router() {
+  if (!state.user) return renderLogin();
+  closeModal();
+  if (state.leaveHook) {  // oldingi sahifa chiqishda tozalash qilishi kerak bo'lsa
+    const hook = state.leaveHook;
+    state.leaveHook = null;
+    hook();
+  }
+  const hash = location.hash.split("?")[0];
+  for (const [re, view, perms] of routes) {
+    const m = hash.match(re);
+    if (!m) continue;
+    if (perms && !can(...perms)) break;  // ruxsat yo'q - o'zining birinchi bo'limiga
+    try {
+      await view(...m.slice(1));
+    } catch (e) {
+      if (state.user) toast(e.message, true);
+    }
+    return;
+  }
+  go(defaultRoute());
+}
+
+window.addEventListener("hashchange", router);
+
+// Yon panel holati: saqlangan bo'lsa shu, bo'lmasa kichik ekranda yig'ilgan
+(function initSidebar() {
+  let saved = null;
+  try { saved = localStorage.getItem("side-collapsed"); } catch { /* ruxsat yo'q */ }
+  const collapsed = saved === null ? window.innerWidth <= 1150 : saved === "1";
+  document.body.classList.toggle("side-collapsed", collapsed);
+})();
+
+(async function start() {
+  try {
+    state.user = await api("GET", "/api/me");
+    await loadSettings();
+  } catch {
+    state.user = null;
+  }
+  router();
+})();
+
+window.__eproposLoaded = true;

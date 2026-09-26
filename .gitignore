@@ -1,14 +1,8 @@
-# Python
-venv/
+epropos.db
+epropos.db-*
 __pycache__/
 *.pyc
-
-# Database
-*.sqlite3
-
-# Media
-media/
-
-# OS
-.DS_Store
-Thumbs.db
+uploads/
+epropos.pid
+epropos.log
+android/build/

@@ -1,45 +1,86 @@
-# 🍽️ SalesPOS — Kafe/Restoran boshqaruv tizimi
+# 🛒 EproPos — do'kon uchun savdo va ombor dasturi
 
-Yengil POS tizimi. **Faqat Python kerak** — Node.js, npm yo'q!
+Magazinlar uchun yengil POS va ombor tizimi. **Faqat Python kerak**: `pip install`, Node.js yoki internet shart emas.
+Ma'lumotlar shu papkadagi `epropos.db` (SQLite) faylida saqlanadi.
 
 ## 🚀 Ishga tushirish
 
-| Tugma | Vazifasi |
-|-------|----------|
-| **ISHGA_TUSHIR.bat** | Dasturni yoqadi, brauzer ochiladi |
-| **YANGILASH.bat** | GitHub dan yangi versiyani oladi |
-| **TOXTAT.bat** | Dasturni to'xtatadi |
+EproPos kompyuterda **alohida oynada** (desktop dastur kabi) ochiladi. Server qora oynasiz orqa fonda ishlaydi.
+
+| Fayl | Vazifasi |
+|------|----------|
+| **ORNATISH.bat** | Bir marta: ish stoli va Pusk menyusiga "EproPos" yorlig'ini qo'shadi |
+| **ISHGA_TUSHIR.bat** | Dasturni ochadi (yorliq bilan bir xil) |
+| **TOXTATISH.bat** | Orqa fondagi serverni to'xtatadi |
+| **YANGILASH.bat** | GitHub'dan yangi versiyani oladi va dasturni qayta ochadi |
+| **TARMOQQA_RUXSAT.bat** | Telefon/planshetdan kirish uchun fayervolda ruxsat (bir marta) |
 
 ### Birinchi marta
-1. **Python** o'rnating: https://www.python.org/downloads/ (PATH ni belgilang)
-2. **ISHGA_TUSHIR.bat** ga ikki marta bosing
+1. **Python 3.8+** o'rnating: https://www.python.org/downloads/ ("Add Python to PATH" ni belgilang)
+2. **ORNATISH.bat** ga ikki marta bosing
+3. Ish stolidagi **EproPos** ikonkasini oching
+
+Linux/macOS: `python3 desktop.py` (yoki faqat server: `python3 server.py`)
 
 ### Kirish
-- Manzil: `http://localhost:8000`
-- Login: **admin** · Parol: **admin123**
+Kirish ekranida **parol** (4 ta raqam) ekrandagi raqamlar bilan teriladi — klaviatura shart emas.
+Administratorning standart paroli: **1234** (Xodimlar bo'limida o'zgartiring).
+5 marta noto'g'ri terilsa, 1 daqiqa kutish kerak bo'ladi.
 
 ## ✨ Imkoniyatlar
-- 📊 Boshqaruv paneli (tushum, statistika)
-- 🪑 Stollar — bosilganda menyu ochiladi
-- 🧾 3 xil buyurtma: Stol / Olib ketish / Masofadan
-- 🖨️ Har taomga printer (oshxona/salat) tayinlash
-- 👨‍🍳 Oshxona paneli — taomlar printer bo'yicha
-- 💰 Kassa (naqd/karta/Payme/Click)
-- 🍽️ Menyu, kategoriya, tannarx va foyda
+
+### 💰 Kassa
+- **Shtrix-kod skaneri** — skaner tovar kodini o'qishi bilan tovar savatga tushadi (sichqoncha shart emas)
+- Tovarni nomi bo'yicha qidirish yoki kategoriya bo'yicha tanlash
+- **Tarozi tovarlari** (kg, litr, metr) — miqdor kasr son bilan kiritiladi (masalan 1.255 kg)
+- Chegirma, mijozni tanlash, to'lov: naqd (qaytim hisoblanadi), karta, Payme, Click, **nasiya**
+- **F2** — to'lov oynasi, **Enter** — tasdiqlash; savat sahifa yangilansa ham saqlanadi
+- Omborda yetmaydigan tovar sotilmaydi (Sozlamalarda ruxsat berish mumkin)
+
+### 🏬 Ombor
+- **Qoldiqlar** — har bir tovar qoldig'i, qiymati (tannarx va sotish narxida), kam qolgan va tugaganlar
+- **Kirim** — ta'minotchidan tovar qabul qilish: miqdor, tannarx, yangi sotish narxi;
+  to'lanmagan qismi ta'minotchiga qarz bo'lib yoziladi. Tannarx o'rtacha hisoblanadi
+- **Inventarizatsiya** — sanalgan haqiqiy qoldiq kiritiladi, farq avtomatik tuzatiladi
+- **Hisobdan chiqarish** — yaroqsiz, singan, muddati o'tgan tovarlar
+- **Harakatlar** — har bir kirim-chiqim tarixi (kim, qachon, nima uchun); tovarni bossangiz — o'z tarixi
+
+### 📦 Mahsulotlar
+- Nomi, shtrix-kod (yoki "Kod yaratish" — ichki EAN-13 kod), kategoriya, o'lchov birligi,
+  tannarx, sotish narxi (ustama % ko'rinadi), minimal qoldiq, rasm
+- **Import** — Excel shablon (.xlsx) yoki CSV orqali: nomi, shtrix-kod, kategoriya, birlik, narxlar, qoldiq
+
+### 🧾 Savdolar
+- Barcha cheklar: ko'rish, qayta chop etish, **qisman qaytarish** va **to'liq bekor qilish**
+  (pul qaytariladi, tovar omborga qaytadi); chek o'chirilmaydi — tarixda qoladi
+- **Sozlamalar → Chek**: chekda nimalar chiqishi (logo, do'kon nomi, kassir, mijoz, qaytim...) va qog'oz kengligi
+
+### Boshqalar
+- 👥 **CRM** — mijozlar, nasiyalar (muddati o'tgan / keldi / bor), to'lovlar
+- 💵 **Moliya** — kassa balansi (naqd, karta, Payme, Click, hisob raqam), kirim-chiqim, ta'minotchilar balansi
+- 📊 **Hisobotlar** — tushum, tannarx, **foyda**, ko'p sotilgan tovarlar, kassirlar
+- 👤 **Xodimlar** — telefon, ism, 4 raqamli parol va bo'limlarga ruxsatlar
+- 📓 **Jurnal** — barcha amallar: kim, qachon, nima qildi
+- 🔌 **Integratsiyalar** — Telegram bot (xodimlar uchun jurnal xabarlari) va Mijozlar boti
+  (chek, nasiya balansi, xabarlar)
+- 🚫 Dublikatlar yo'q — bir xil nomli tovar/kategoriya yoki bir xil shtrix-kod ikki marta yaratilmaydi
+
+## 📶 Telefon va planshetdan kirish
+Qurilma kompyuter bilan bitta Wi-Fi'da bo'lsin. Manzil **Sozlamalar → Umumiy** sahifasida ko'rsatiladi
+(masalan `http://192.168.1.10:8000`). Ochilmasa — **TARMOQQA_RUXSAT.bat**.
 
 ## 🛠️ Texnologiya
-- **Backend:** Django (`server.py` — bitta fayl)
-- **Frontend:** Vanilla JS + Tailwind CDN (build yo'q)
-- **Baza:** SQLite
+- Backend: Python standart kutubxonasi (`http.server` + `sqlite3`) — `server.py`
+- Frontend: oddiy HTML/CSS/JavaScript — `static/`
+- Excel: `xlsx.py`, Telegram: `telegram.py`, desktop oyna: `desktop.py`
 
-## 📁 Struktura
+## 🧪 Testlar
 ```
-salespos/
-├── server.py          # Butun backend
-├── index.html         # Frontend (login + layout)
-├── static/app.js      # Ilova logikasi
-├── requirements.txt
-├── ISHGA_TUSHIR.bat
-├── YANGILASH.bat
-└── TOXTAT.bat
+python -m unittest discover tests
 ```
+
+## ⚙️ Sozlamalar (ixtiyoriy)
+| O'zgaruvchi | Standart | Tavsif |
+|-------------|----------|--------|
+| `EPROPOS_PORT` | `8000` | Server porti |
+| `EPROPOS_DB` | `epropos.db` | Baza fayli yo'li |
