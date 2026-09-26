@@ -8,6 +8,7 @@ on:
       - "static/**"
       - "*.py"
       - "version.json"
+      - "tests/**"
       - ".github/workflows/android.yml"
   workflow_dispatch:
 
