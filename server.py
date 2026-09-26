@@ -24,6 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 from xml.etree import ElementTree
 
+import sync
 import telegram
 import xlsx
 
@@ -37,6 +38,9 @@ MAX_IMAGE = 3 * 1024 * 1024
 IMAGE_TYPES = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
 DB_PATH = os.environ.get("EPROPOS_DB", os.path.join(BASE_DIR, "epropos.db"))
 PORT = int(os.environ.get("EPROPOS_PORT", "8100"))
+# hub - kompyuter (asosiy baza, telefonlar unga ulanadi); phone - telefondagi ilova (o'z bazasi bilan oflayn ishlaydi)
+ROLE = os.environ.get("EPROPOS_ROLE", "hub")
+STATIC_DIR = os.environ.get("EPROPOS_STATIC", STATIC_DIR)
 SESSION_DAYS = 7
 
 ROLES = ("admin", "cashier", "staff")  # staff = ruxsatlari qo'lda belgilangan xodim
@@ -71,7 +75,7 @@ db_lock = threading.Lock()
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT NOT NULL UNIQUE,
+    username TEXT NOT NULL,
     full_name TEXT NOT NULL,
     first_name TEXT,
     last_name TEXT,
@@ -80,7 +84,9 @@ CREATE TABLE IF NOT EXISTS users (
     permissions TEXT,                  -- JSON ro'yxat; NULL = rol bo'yicha standart ruxsatlar
     password_hash TEXT NOT NULL,
     salt TEXT NOT NULL,
-    pin_lookup TEXT,                   -- PIN (raqamli parol): HMAC(sir, pin)
+    pin_lookup TEXT,                   -- eski usul: HMAC(sir, pin)
+    pin_salt TEXT,                     -- PIN (raqamli parol): sha256(tuz:pin)
+    pin_hash TEXT,
     active INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS sessions (
@@ -189,7 +195,7 @@ CREATE TABLE IF NOT EXISTS stock_docs (
 );
 CREATE TABLE IF NOT EXISTS finance_types (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    name TEXT NOT NULL COLLATE NOCASE,
     direction TEXT NOT NULL,           -- 'in' = kirim, 'out' = chiqim
     is_system INTEGER NOT NULL DEFAULT 0,
     is_adjust INTEGER NOT NULL DEFAULT 0,
@@ -216,7 +222,7 @@ CREATE INDEX IF NOT EXISTS idx_finance_created ON finance_entries(created_at);
 CREATE TABLE IF NOT EXISTS customers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
-    phone TEXT NOT NULL UNIQUE,
+    phone TEXT NOT NULL,               -- takrorlanmasligini dastur tekshiradi
     gender TEXT NOT NULL,              -- 'm' erkak, 'f' ayol
     telegram_chat_id TEXT,             -- mijozlar botiga ulangan bo'lsa
     telegram_linked_at TEXT,
@@ -251,7 +257,7 @@ CREATE TABLE IF NOT EXISTS debt_payments (
 CREATE INDEX IF NOT EXISTS idx_debts_customer ON debts(customer_id);
 CREATE TABLE IF NOT EXISTS suppliers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    name TEXT NOT NULL COLLATE NOCASE,
     phone TEXT,
     created_at TEXT NOT NULL,
     created_by INTEGER REFERENCES users(id)
@@ -302,19 +308,71 @@ CREATE TABLE IF NOT EXISTS integrations (
 """
 
 # Kelajakda bazaga yangi ustunlar shu yerda qo'shiladi (ma'lumot o'chmaydi): (jadval, ustun, ta'rif)
-MIGRATIONS = []
+MIGRATIONS = [
+    ("users", "pin_salt", "TEXT"),
+    ("users", "pin_hash", "TEXT"),
+]
+# Telefon va kompyuterda bir vaqtda (oflayn) yaratilgan yozuvlar to'qnashmasin: bu cheklovlarni dastur o'zi tekshiradi
+NO_UNIQUE_TABLES = ("users", "customers", "suppliers", "finance_types")
+
+
+def drop_unique_constraints(conn):
+    """Eski bazada UNIQUE bo'lsa - jadval yangi sxema bo'yicha qayta quriladi (ma'lumot saqlanadi)."""
+    todo = [t for t in NO_UNIQUE_TABLES
+            if "UNIQUE" in (conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (t,)).fetchone()[0] or "")]
+    if not todo:
+        return
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = OFF")
+    for t in todo:
+        ddl = re.search(rf"CREATE TABLE IF NOT EXISTS {t} \((.*?)\n\);", SCHEMA, re.S).group(1)
+        old_cols = [r[1] for r in conn.execute(f"PRAGMA table_info({t})")]
+        conn.execute(f"CREATE TABLE {t}_new ({ddl})")
+        new_cols = [r[1] for r in conn.execute(f"PRAGMA table_info({t}_new)")]
+        cols = ", ".join(c for c in old_cols if c in new_cols)
+        conn.execute(f"INSERT INTO {t}_new ({cols}) SELECT {cols} FROM {t}")
+        conn.execute(f"DROP TABLE {t}")
+        conn.execute(f"ALTER TABLE {t}_new RENAME TO {t}")
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = ON")
 
 
 def connect():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, factory=sync.SyncConnection)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
 def pin_hash(conn, pin):
-    secret = conn.execute("SELECT value FROM settings WHERE key = '_pin_secret'").fetchone()[0]
-    return hmac.new(secret.encode(), str(pin).encode(), hashlib.sha256).hexdigest()
+    """Eski usul (HMAC umumiy sir bilan) - avval yaratilgan parollar uchun."""
+    row = conn.execute("SELECT value FROM settings WHERE key = '_pin_secret'").fetchone()
+    return hmac.new(row[0].encode(), str(pin).encode(), hashlib.sha256).hexdigest() if row else None
+
+
+def pin_digest(salt, pin):
+    return hashlib.sha256(f"{salt}:{pin}".encode()).hexdigest()
+
+
+def salted_pin(pin):
+    salt = secrets.token_hex(8)
+    return salt, pin_digest(salt, pin)
+
+
+def find_pin_user(conn, pin, exclude_id=None):
+    """Shu parolli faol xodim (har bir xodim paroli o'z tuzi bilan saqlanadi)."""
+    legacy = None
+    for u in conn.execute("""SELECT * FROM users WHERE active = 1 AND (pin_hash IS NOT NULL OR pin_lookup IS NOT NULL)
+                             ORDER BY id"""):
+        if exclude_id is not None and u["id"] == int(exclude_id):
+            continue
+        if u["pin_hash"] and hmac.compare_digest(pin_digest(u["pin_salt"], pin), u["pin_hash"]):
+            return u
+        if u["pin_lookup"]:
+            legacy = legacy or pin_hash(conn, pin)
+            if legacy and hmac.compare_digest(legacy, u["pin_lookup"]):
+                return u
+    return None
 
 
 def hash_password(password, salt=None):
@@ -333,13 +391,20 @@ def init_db(conn):
         columns = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})")]
         if column not in columns:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
-    if conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
+    conn.execute("DROP INDEX IF EXISTS idx_users_pin")
+    drop_unique_constraints(conn)
+    sync.init(conn, ROLE)
+    fresh = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
+    if fresh:
         pw, salt = hash_password(secrets.token_urlsafe(16))
+        pin_salt, pin_value = salted_pin(DEFAULT_PIN)
         conn.execute(
-            "INSERT INTO users (username, full_name, first_name, role, password_hash, salt) VALUES (?,?,?,?,?,?)",
-            ("admin", "Administrator", "Administrator", "admin", pw, salt),
+            """INSERT INTO users (username, full_name, first_name, role, password_hash, salt, pin_salt, pin_hash)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            ("admin", "Administrator", "Administrator", "admin", pw, salt, pin_salt, pin_value),
         )
-        # Namuna mahsulotlar - administrator keyin o'zgartiradi yoki o'chiradi
+    if fresh and ROLE == "hub":
+        # Namuna mahsulotlar (faqat yangi kompyuter bazasida) - administrator keyin o'zgartiradi yoki o'chiradi
         demo = {
             "Oziq-ovqat": [("Non", "4780000000011", "dona", 4000, 3000, 50), ("Shakar", "4780000000028", "kg", 14000, 11500, 25.5),
                            ("Guruch", "4780000000035", "kg", 22000, 18000, 40)],
@@ -359,21 +424,20 @@ def init_db(conn):
                 conn.execute(
                     """INSERT INTO stock_moves (product_id, qty, kind, balance, comment, created_at)
                        VALUES (?, ?, 'initial', ?, 'Boshlang''ich qoldiq', ?)""", (pid, stock, stock, now()))
-    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_pin ON users(pin_lookup)")
-    if not conn.execute("SELECT 1 FROM settings WHERE key = '_pin_secret'").fetchone():
-        conn.execute("INSERT INTO settings (key, value) VALUES ('_pin_secret', ?)", (secrets.token_hex(32),))
-    if not conn.execute("SELECT 1 FROM users WHERE pin_lookup IS NOT NULL").fetchone():
-        # PIN hali hech kimda yo'q - administratorga standart parol 1234 (keyin Xodimlar bo'limida o'zgartiriladi)
-        conn.execute("UPDATE users SET pin_lookup = ? WHERE id = (SELECT MIN(id) FROM users WHERE role = 'admin')",
-                     (pin_hash(conn, DEFAULT_PIN),))
-    # Bazaviy tranzaksiya turlari doim bo'ladi
-    for name, direction in SYSTEM_FINANCE_TYPES + tuple((n, d) for d, n in ADJUST_TYPES.items()):
-        conn.execute(
-            """INSERT OR IGNORE INTO finance_types (name, direction, is_system, created_at)
-               VALUES (?, ?, 1, ?)""",
-            (name, direction, now()),
-        )
-    conn.executemany("UPDATE finance_types SET is_adjust = 1 WHERE name = ?", [(n,) for n in ADJUST_TYPES.values()])
+    if not conn.execute("SELECT 1 FROM users WHERE pin_lookup IS NOT NULL OR pin_hash IS NOT NULL").fetchone():
+        # parol hali hech kimda yo'q - administratorga standart parol 1234 (keyin Xodimlar bo'limida o'zgartiriladi)
+        conn.execute("UPDATE users SET pin_salt = ?, pin_hash = ? WHERE id = (SELECT MIN(id) FROM users WHERE role = 'admin')",
+                     salted_pin(DEFAULT_PIN))
+    # Bazaviy tranzaksiya turlari doim bo'ladi - barcha qurilmalarda bir xil ID bilan (1, 2, ...)
+    for i, (name, direction) in enumerate(SYSTEM_FINANCE_TYPES + tuple((n, d) for d, n in ADJUST_TYPES.items()), start=1):
+        if not conn.execute("SELECT 1 FROM finance_types WHERE name = ?", (name,)).fetchone():
+            conn.execute(
+                """INSERT OR IGNORE INTO finance_types (id, name, direction, is_system, created_at)
+                   VALUES (?, ?, ?, 1, ?)""",
+                (i, name, direction, now()),
+            )
+    conn.executemany("UPDATE finance_types SET is_adjust = 1 WHERE name = ? AND is_adjust = 0", [(n,) for n in ADJUST_TYPES.values()])
+    sync.backfill(conn)
     conn.commit()
 
 
@@ -717,7 +781,7 @@ def delete_product(conn, user, params, data, query):
 
 @route("GET", "/api/settings")
 def read_settings(conn, user, params, data, query):
-    return get_settings(conn)
+    return dict(get_settings(conn), role=ROLE)
 
 
 @route("PUT", "/api/settings", ("settings",))
@@ -2045,7 +2109,7 @@ def list_users(conn, user, params, data, query):
     users = rows(
         conn.execute(
             """SELECT id, username, full_name, first_name, last_name, phone, role, permissions, active,
-                      pin_lookup IS NOT NULL AS has_pin
+                      (pin_lookup IS NOT NULL OR pin_hash IS NOT NULL) AS has_pin
                FROM users ORDER BY active DESC, id"""
         )
     )
@@ -2095,10 +2159,9 @@ def set_pin(conn, user_id, pin):
     pin = str(pin or "").strip()
     if not re.fullmatch(rf"\d{{{PIN_LENGTH}}}", pin):
         raise ApiError(400, f"PIN kod {PIN_LENGTH} ta raqam bo'lishi kerak")
-    lookup = pin_hash(conn, pin)
-    if conn.execute("SELECT 1 FROM users WHERE pin_lookup = ? AND id != ?", (lookup, user_id)).fetchone():
+    if find_pin_user(conn, pin, exclude_id=user_id):
         raise ApiError(409, "Bu PIN kod boshqa xodimda bor - boshqasini tanlang")
-    conn.execute("UPDATE users SET pin_lookup = ? WHERE id = ?", (lookup, user_id))
+    conn.execute("UPDATE users SET pin_salt = ?, pin_hash = ?, pin_lookup = NULL WHERE id = ?", (*salted_pin(pin), user_id))
 
 
 @route("POST", "/api/users", ("users",))
@@ -2237,7 +2300,7 @@ TELEGRAM_DEFAULT_CATEGORIES = ("sales", "warehouse", "finance", "crm", "products
 ACCOUNT_NAMES = {"cash": "Naqd", "card": "Karta", "payme": "Payme", "click": "Click", "bank": "Hisob raqam",
                  "debt": "Nasiyaga", "adjust": "Tuzatish"}
 DEBT_METHOD_NAMES = {"cash": "Naqd", "click": "Click", "terminal": "Terminal", "transfer": "Pul ko'chirish"}
-SECRET_FIELDS = {"password", "password_hash", "salt", "token", "image", "data", "logo", "pin", "pin_lookup"}
+SECRET_FIELDS = {"password", "password_hash", "salt", "token", "image", "data", "logo", "pin", "pin_lookup", "pin_hash", "pin_salt"}
 
 
 def fmt_money(n):
@@ -3170,6 +3233,244 @@ def send_customer_message(conn, user, params, data, query):
     return {"sent": len(targets), "names": [t["name"] for t in targets[:20]]}
 
 
+# --- sinxronlash: kompyuter (hub) <-> telefonlar (phone)
+
+
+def hub_device(conn, token):
+    if not token:
+        raise ApiError(401, "Qurilma ulanmagan")
+    row = conn.execute("SELECT * FROM sync_devices WHERE token_hash = ? AND active = 1",
+                       (hashlib.sha256(str(token).encode()).hexdigest(),)).fetchone()
+    if not row:
+        raise ApiError(401, "Bu telefon kompyuterdan uzilgan - qayta ulang")
+    return row
+
+
+def sync_hello(conn):
+    return {"app": "EproPos", "role": ROLE, "node": conn.sync_node, "shop": get_settings(conn)["shop_name"]}
+
+
+def sync_pair(handler, conn, data):
+    """Telefon kompyuterga ulanadi: administrator (yoki Sozlamalar ruxsati bor xodim) paroli bilan."""
+    if ROLE != "hub":
+        raise ApiError(400, "Bu qurilma kompyuter emas")
+    ip = handler.client_address[0]
+    wait = LOGIN_GUARD.blocked(ip)
+    if wait:
+        raise ApiError(429, f"Ko'p noto'g'ri urinish. {wait} soniyadan keyin qayta urining")
+    user = find_pin_user(conn, str(data.get("pin") or "").strip())
+    if not user or not ({"settings"} & set(effective_permissions(user["role"], user["permissions"]))):
+        LOGIN_GUARD.fail(ip)
+        raise ApiError(401, "Parol noto'g'ri yoki bu xodimda Sozlamalar ruxsati yo'q")
+    LOGIN_GUARD.ok(ip)
+    token = secrets.token_urlsafe(32)
+    node = str(to_int(data.get("node"), "node", 1))
+    name = str(data.get("name") or "Telefon")[:60]
+    conn.execute("UPDATE sync_devices SET active = 0 WHERE node = ?", (node,))
+    conn.execute("INSERT INTO sync_devices (node, name, token_hash, created_at, last_ip) VALUES (?, ?, ?, ?, ?)",
+                 (node, name, hashlib.sha256(token.encode()).hexdigest(), now(), ip))
+    write_journal(conn, public_user(user), "settings", entry("Telefon kompyuterga ulandi", f"{name} · {ip}"), "sync_pair")
+    secret = conn.execute("SELECT value FROM settings WHERE key = '_pin_secret'").fetchone()
+    return {"token": token, "hub_node": conn.sync_node, "shop": get_settings(conn)["shop_name"],
+            "pin_secret": secret[0] if secret else None}
+
+
+def sync_exchange(handler, conn, data):
+    """Telefon o'z o'zgarishlarini yuboradi va kompyuterdagilarini oladi (bitta so'rovda)."""
+    if ROLE != "hub":
+        raise ApiError(400, "Bu qurilma kompyuter emas")
+    device = hub_device(conn, data.get("token"))
+    changes = data.get("changes") or []
+    if not isinstance(changes, list) or len(changes) > 5000:
+        raise ApiError(400, "Noto'g'ri ma'lumot")
+
+    def run():
+        with db_lock:
+            try:
+                conn.commit()
+                conn.execute("PRAGMA foreign_keys = OFF")
+                applied = sync.apply(conn, changes, device["node"])
+                out, last, more = sync.collect(conn, int(data.get("since") or 0), sync.BATCH, exclude_origin=device["node"])
+                conn.execute("UPDATE sync_devices SET last_sync = ?, last_ip = ? WHERE id = ?",
+                             (now(), handler.client_address[0], device["id"]))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.execute("PRAGMA foreign_keys = ON")
+        return {"applied": applied, "changes": out, "seq": last, "more": more}
+    return run
+
+
+class SyncWorker:
+    """Telefonda: kompyuter bilan har 15 soniyada almashadi; kompyuter manzili o'zgarsa - tarmoqdan qayta topadi."""
+
+    def __init__(self, conn):
+        self.conn = conn
+        self.status = {"state": "idle", "last_ok": None, "last_error": None, "running": False}
+        self.wake = threading.Event()
+        self.fails = 0
+
+    def start(self):
+        threading.Thread(target=self.loop, daemon=True).start()
+
+    def loop(self):
+        while True:
+            self.wake.wait(15)
+            self.wake.clear()
+            try:
+                self.run_once()
+            except Exception as e:  # fon jarayoni hech qachon to'xtamasin
+                self.status["last_error"] = str(e)
+
+    def cfg(self):
+        with db_lock:
+            return {k: sync.meta(self.conn, k) for k in ("hub_url", "token", "hub_node", "last_pull", "last_push")}
+
+    def run_once(self):
+        cfg = self.cfg()
+        if not cfg["token"] or self.status["running"]:
+            return
+        self.status["running"] = True
+        try:
+            self.exchange(cfg)
+            self.fails = 0
+            self.status.update(state="ok", last_ok=now(), last_error=None)
+        except sync.SyncError as e:
+            self.fails += 1
+            self.status.update(state="offline" if e.status is None else "error", last_error=str(e))
+            if e.status == 401:
+                self.status["state"] = "unpaired"
+            elif e.status is None and self.fails % 8 == 4:
+                self.rediscover(cfg)  # kompyuter IP manzili o'zgargan bo'lishi mumkin
+        finally:
+            self.status["running"] = False
+
+    def exchange(self, cfg):
+        url = cfg["hub_url"].rstrip("/") + "/api/sync/exchange"
+        pull, push = int(cfg["last_pull"] or 0), int(cfg["last_push"] or 0)
+        for _ in range(200):
+            with db_lock:
+                local, push_to, local_more = sync.collect(self.conn, push, sync.BATCH, only_local=True)
+            res = sync.post_json(url, {"token": cfg["token"], "node": self.conn.sync_node, "since": pull, "changes": local}, 60)
+            with db_lock:
+                try:
+                    self.conn.commit()
+                    self.conn.execute("PRAGMA foreign_keys = OFF")
+                    sync.apply(self.conn, res.get("changes") or [], cfg["hub_node"])
+                    pull, push = int(res.get("seq") or pull), push_to
+                    sync.set_meta(self.conn, "last_pull", pull)
+                    sync.set_meta(self.conn, "last_push", push)
+                    self.conn.commit()
+                except Exception:
+                    self.conn.rollback()
+                    raise
+                finally:
+                    self.conn.execute("PRAGMA foreign_keys = ON")
+            if not res.get("more") and not local_more:
+                return
+
+    def rediscover(self, cfg):
+        for hub in sync.discover(PORT):
+            if str(hub.get("node")) == str(cfg["hub_node"]):
+                with db_lock:
+                    sync.set_meta(self.conn, "hub_url", hub["url"])
+                    self.conn.commit()
+                return
+
+
+sync_worker = None
+
+
+@route("GET", "/api/sync/status", ("settings",))
+def sync_status(conn, user, params, data, query):
+    res = {"role": ROLE, "node": conn.sync_node}
+    if ROLE == "hub":
+        res["devices"] = rows(conn.execute(
+            "SELECT id, node, name, created_at, last_sync, last_ip FROM sync_devices WHERE active = 1 ORDER BY id DESC"))
+        res["urls"] = lan_urls()
+        return res
+    cfg = {k: sync.meta(conn, k) for k in ("hub_url", "hub_shop", "token", "last_push")}
+    pending = conn.execute("SELECT COUNT(*) FROM sync_changes WHERE origin = 'local' AND seq > ?",
+                           (int(cfg["last_push"] or 0),)).fetchone()[0]
+    res.update(paired=bool(cfg["token"]), hub_url=cfg["hub_url"], hub_shop=cfg["hub_shop"], pending=pending,
+               **(sync_worker.status if sync_worker else {}))
+    return res
+
+
+@route("DELETE", r"/api/sync/devices/(\d+)", ("settings",))
+def sync_remove_device(conn, user, params, data, query):
+    conn.execute("UPDATE sync_devices SET active = 0 WHERE id = ?", (params[0],))
+    return {"ok": True}
+
+
+@route("POST", "/api/sync/scan", ("settings",))
+def sync_scan(conn, user, params, data, query):
+    return Deferred(lambda: sync.discover(PORT))
+
+
+@route("POST", "/api/sync/connect", ("settings",))
+def sync_connect(conn, user, params, data, query):
+    """Telefonni kompyuterga ulash. Telefonda hali ma'lumot bo'lmasa - hammasi kompyuterdan olinadi."""
+    if ROLE != "phone":
+        raise ApiError(400, "Faqat telefondagi ilovada")
+    url = str(data.get("url") or "").strip().rstrip("/")
+    if not re.match(r"^https?://", url):
+        url = "http://" + url
+    if not re.search(r":\d+$", url.split("//", 1)[1]):
+        url += f":{PORT}"
+    pin = str(data.get("pin") or "").strip()
+
+    def run():
+        info = sync.hello(url, 3)
+        if not info or info.get("role") != "hub":
+            raise ApiError(400, f"{url} manzilida EproPos kompyuteri topilmadi")
+        try:
+            res = sync.post_json(url + "/api/sync/pair", {"pin": pin, "node": conn.sync_node, "name": "Telefon"}, 15)
+        except sync.SyncError as e:
+            raise ApiError(e.status or 502, str(e))
+        with db_lock:
+            try:
+                fresh = sync.is_fresh(conn)
+                conn.commit()
+                conn.execute("PRAGMA foreign_keys = OFF")
+                if fresh:
+                    sync.wipe_for_clone(conn)
+                    if res.get("pin_secret"):
+                        conn.execute("INSERT INTO settings (key, value) VALUES ('_pin_secret', ?) ON CONFLICT(key) "
+                                     "DO UPDATE SET value = excluded.value", (res["pin_secret"],))
+                for k, v in (("hub_url", url), ("token", res["token"]), ("hub_node", res["hub_node"]),
+                             ("hub_shop", res.get("shop")), ("last_pull", 0), ("last_push", 0)):
+                    sync.set_meta(conn, k, v)
+                conn.commit()
+            finally:
+                conn.execute("PRAGMA foreign_keys = ON")
+        sync_worker.run_once()
+        if sync_worker.status.get("state") != "ok":
+            raise ApiError(502, sync_worker.status.get("last_error") or "Sinxronlash bo'lmadi")
+        return {"ok": True, "cloned": fresh, "shop": res.get("shop")}
+    return Deferred(run)
+
+
+@route("POST", "/api/sync/now", ("settings", "cashier"))
+def sync_now(conn, user, params, data, query):
+    if ROLE != "phone" or not sync_worker:
+        raise ApiError(400, "Faqat telefondagi ilovada")
+
+    def run():
+        sync_worker.run_once()
+        return sync_worker.status
+    return Deferred(run)
+
+
+@route("POST", "/api/sync/disconnect", ("settings",))
+def sync_disconnect(conn, user, params, data, query):
+    for k in ("token", "hub_url", "hub_node", "hub_shop"):
+        sync.set_meta(conn, k, None)
+    return {"ok": True}
+
+
 # --- jurnal sahifasi
 
 
@@ -3379,6 +3680,12 @@ class Handler(BaseHTTPRequestHandler):
     def handle_api(self, conn, method, path, data, query):
         if method == "POST" and path == "/api/login":
             return self.login(conn, data)
+        if path == "/api/sync/hello":  # tarmoqda EproPos kompyuterini topish uchun
+            return 200, sync_hello(conn), None
+        if method == "POST" and path == "/api/sync/pair":
+            return 200, sync_pair(self, conn, data), None
+        if method == "POST" and path == "/api/sync/exchange":
+            return 200, Deferred(sync_exchange(self, conn, data)), None
         if method == "POST" and path == "/api/logout":
             token = self.session_token()
             if token:
@@ -3413,8 +3720,11 @@ class Handler(BaseHTTPRequestHandler):
         if wait:
             raise ApiError(429, f"Ko'p noto'g'ri urinish. {wait} soniyadan keyin qayta urining")
         if data.get("pin") not in (None, ""):  # PIN kod bilan kirish (ekrandagi raqamlar)
-            row = conn.execute("SELECT * FROM users WHERE pin_lookup = ? AND active = 1",
-                               (pin_hash(conn, str(data["pin"]).strip()),)).fetchone()
+            pin = str(data["pin"]).strip()
+            row = find_pin_user(conn, pin)
+            if row and not row["pin_hash"]:  # eski usuldagi parol - yangi usulga o'tkaziladi
+                conn.execute("UPDATE users SET pin_salt = ?, pin_hash = ?, pin_lookup = NULL WHERE id = ?",
+                             (*salted_pin(pin), row["id"]))
             if not row:
                 LOGIN_GUARD.fail(ip)
                 raise ApiError(401, "PIN kod noto'g'ri")
@@ -3454,6 +3764,10 @@ def make_server(port=PORT, host="0.0.0.0", poll_bots=False):
     server = ThreadingHTTPServer((host, port), Handler)
     server.daemon_threads = True
     server.conn = conn
+    if ROLE == "phone":  # telefonda: kompyuter bilan fonda sinxronlash
+        global sync_worker
+        sync_worker = SyncWorker(conn)
+        sync_worker.start()
     if poll_bots:  # mijozlar botiga kelgan xabarlarni o'qish
         global customer_poller
         customer_poller = CustomerBotPoller(conn)
