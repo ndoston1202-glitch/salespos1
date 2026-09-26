@@ -1,9 +1,12 @@
 package uz.epropos.app;
 
 import android.app.Activity;
+import android.app.DownloadManager;
+import android.content.BroadcastReceiver;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.res.AssetManager;
 import android.graphics.Color;
@@ -18,6 +21,7 @@ import android.print.PrintAttributes;
 import android.print.PrintDocumentAdapter;
 import android.print.PrintManager;
 import android.provider.MediaStore;
+import android.provider.Settings;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.KeyEvent;
@@ -102,7 +106,8 @@ public class MainActivity extends Activity {
             copyStatic(stat);
             if (!Python.isStarted()) Python.start(new AndroidPlatform(this));
             PyObject main = Python.getInstance().getModule("mobile_main");
-            serverPort = main.callAttr("start", data.getAbsolutePath(), stat.getAbsolutePath(), 8100).toInt();
+            serverPort = main.callAttr("start", data.getAbsolutePath(), stat.getAbsolutePath(), 8100,
+                    versionCode()).toInt();
             ui.post(this::openApp);
         } catch (Throwable e) {
             String msg = String.valueOf(e.getMessage());
@@ -121,6 +126,16 @@ public class MainActivity extends Activity {
         if (dir.isDirectory() && prefs.getLong("static_version", 0) == version) return;
         copyAssetDir(getAssets(), "static", dir);
         prefs.edit().putLong("static_version", version).apply();
+    }
+
+    @SuppressWarnings("deprecation")
+    private long versionCode() {
+        try {
+            android.content.pm.PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
+            return Build.VERSION.SDK_INT >= 28 ? info.getLongVersionCode() : info.versionCode;
+        } catch (Exception e) {
+            return 0;
+        }
     }
 
     private static void copyAssetDir(AssetManager assets, String path, File dest) throws Exception {
@@ -217,6 +232,73 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public boolean isApp() {
             return true;
+        }
+
+        @JavascriptInterface
+        public long versionCode() {
+            return MainActivity.this.versionCode();
+        }
+
+        /** Yangi versiya APK sini yuklab olib, o'rnatish oynasini ochadi */
+        @JavascriptInterface
+        public void installApk(String url) {
+            ui.post(() -> downloadApk(url));
+        }
+    }
+
+    // ------------------------------------------------------------ ilovani yangilash
+
+    private long apkDownload = -1;
+    private BroadcastReceiver apkReceiver;
+
+    private void downloadApk(String url) {
+        if (Build.VERSION.SDK_INT >= 26 && !getPackageManager().canRequestPackageInstalls()) {
+            toast("EproPos'ga ilova o'rnatishga ruxsat bering, keyin \"Yangilash\" ni qayta bosing");
+            try {
+                startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:" + getPackageName())));
+            } catch (Exception ignored) {
+            }
+            return;
+        }
+        File old = new File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "EproPos.apk");
+        if (old.exists()) old.delete();
+        DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+        DownloadManager.Request req = new DownloadManager.Request(Uri.parse(url))
+                .setTitle("EproPos yangilanishi")
+                .setMimeType("application/vnd.android.package-archive")
+                .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                .setDestinationInExternalFilesDir(this, Environment.DIRECTORY_DOWNLOADS, "EproPos.apk");
+        apkDownload = dm.enqueue(req);
+        if (apkReceiver == null) {
+            apkReceiver = new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context context, Intent intent) {
+                    long id = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1);
+                    if (id == apkDownload) installDownloaded(id);
+                }
+            };
+            IntentFilter filter = new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE);
+            if (Build.VERSION.SDK_INT >= 33) registerReceiver(apkReceiver, filter, Context.RECEIVER_EXPORTED);
+            else registerReceiver(apkReceiver, filter);
+        }
+        toast("Yangi versiya yuklab olinmoqda...");
+    }
+
+    private void installDownloaded(long id) {
+        DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
+        Uri uri = dm.getUriForDownloadedFile(id);
+        if (uri == null) {
+            toast("Yuklab bo'lmadi. Internetni tekshirib, qayta urining");
+            return;
+        }
+        Intent install = new Intent(Intent.ACTION_VIEW);
+        install.setDataAndType(uri, "application/vnd.android.package-archive");
+        install.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+            startActivity(install);
+        } catch (Exception e) {
+            toast("O'rnatish oynasini ochib bo'lmadi: " + e.getMessage());
         }
     }
 
@@ -333,6 +415,12 @@ public class MainActivity extends Activity {
             return true;
         }
         return super.onKeyDown(keyCode, event);
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (apkReceiver != null) unregisterReceiver(apkReceiver);
+        super.onDestroy();
     }
 
     @Override

@@ -7,6 +7,7 @@ on:
       - "android/**"
       - "static/**"
       - "*.py"
+      - "version.json"
       - ".github/workflows/android.yml"
   workflow_dispatch:
 
@@ -61,4 +62,6 @@ jobs:
               --notes "Telefon uchun EproPos. EproPos.apk ni yuklab, o'rnating. Ilova internetsiz va kompyutersiz ham ishlaydi; kompyuter bilan bitta Wi-Fi'da bo'lganda ma'lumotlar sinxronlanadi." \
               --target "$GITHUB_SHA"
           fi
-          gh release upload android-latest android/EproPos.apk --clobber
+          # ilova ichida yangilanishni tekshirish uchun: APK raqami va o'zgarishlar
+          python -c "import json; v = json.load(open('version.json', encoding='utf-8')); v['version_code'] = ${{ github.run_number }}; json.dump(v, open('android/version.json', 'w', encoding='utf-8'), ensure_ascii=False)"
+          gh release upload android-latest android/EproPos.apk android/version.json --clobber

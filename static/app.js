@@ -413,6 +413,7 @@ const SETTINGS_TABS = [
   { perm: "settings", href: "#/settings", icon: "settings", name: "Umumiy" },
   { perm: "settings", href: "#/settings/receipt", icon: "sales", name: "Chek" },
   { perm: "settings", href: "#/settings/sync", icon: "transfer", name: "Sinxronlash" },
+  { perm: "settings", href: "#/settings/update", icon: "download", name: "Yangilash" },
 ];
 
 function visibleNav() {
@@ -495,6 +496,8 @@ function layout(content) {
           <div class="crumbs">${trail.map((t, i) => i < trail.length - 1
             ? `<span class="muted">${esc(t)}</span><i class="chev">${icon("chevron")}</i>` : `<b>${esc(t)}</b>`).join("")}</div>
           <div class="top-actions">
+            ${state.update && state.update.available && can("settings") ? `<a href="#/settings/update" class="update-badge"
+              title="Yangi versiya: ${esc(state.update.latest || "")}">${icon("download")}<span>Yangilash</span></a>` : ""}
             ${state.settings.role === "phone" ? `<a href="${can("settings") ? "#/settings/sync" : "#"}" id="sync-badge" class="sync-badge">${icon("transfer")}</a>` : ""}
             ${tabs.length ? `<a href="${tabs[0].href}" class="top-btn ${inSettings ? "active" : ""}" title="Sozlamalar">
               ${icon("gear")}<span>Sozlamalar</span></a>` : ""}
@@ -543,6 +546,13 @@ function layout(content) {
   $("#side-backdrop").addEventListener("click", () => document.body.classList.remove("nav-open"));
   document.body.classList.remove("nav-open");
   refreshSyncBadge();
+  if (can("settings") && !state.updateChecked) {  // yangi versiya bormi - sessiyada bir marta
+    state.updateChecked = true;
+    api("GET", "/api/update").then((u) => {
+      state.update = u;
+      if (u.available && !$(".update-badge")) router();
+    }).catch(() => {});
+  }
   return $("#view");
 }
 
@@ -3344,6 +3354,85 @@ function viewSyncPhone(st) {
   }));
 }
 
+// ------------------------------------------------------------ dastur ichida yangilash
+
+function updateHtml(u) {
+  const notes = (u.notes || []).length ? `<ul class="help-list">${u.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>` : "";
+  if (u.error) return `<div class="notice error-notice">${esc(u.error)}</div>`;
+  if (!u.available) {
+    return `<div class="sync-card"><div><small class="muted">Holati</small><b>Eng yangi versiya o'rnatilgan ✅</b></div>
+      <span class="badge ok">${esc(u.current || "")}</span></div>`;
+  }
+  return `<div class="sync-card"><div><small class="muted">Yangi versiya chiqdi</small><b>EproPos ${esc(u.latest || "")}</b></div>
+      <span class="badge warn">Yangi</span></div>
+    ${notes ? `<h3>Nimalar yangi</h3>${notes}` : ""}
+    ${u.kind === "apk"
+      ? `<p class="muted">Yangi versiya yuklab olinadi va o'rnatish oynasi ochiladi — <b>"O'rnatish"</b> ni bosing.
+          Telefondagi ma'lumotlar saqlanib qoladi.</p>
+         ${window.EproPosApp && window.EproPosApp.installApk
+           ? `<button class="btn primary big" id="do-update">${icon("download")} Yuklab olish va o'rnatish</button>`
+           : `<a class="btn primary big" href="${esc(u.apk_url)}">${icon("download")} APK ni yuklab olish</a>`}`
+      : `<p class="muted">Yangi versiya internetdan yuklab olinadi, dastur o'zi qayta ishga tushadi (10–30 soniya).
+          Ma'lumotlar, rasmlar va sozlamalar saqlanib qoladi. Telefonlar shu vaqtda o'zgarishlarni saqlab turadi.</p>
+         <button class="btn primary big" id="do-update">${icon("download")} Hozir yangilash</button>`}`;
+}
+
+async function viewUpdate() {
+  const view = layout(`
+    <div class="panel sync-panel" style="max-width:640px">
+      <h2>⬆️ Dasturni yangilash</h2>
+      <p class="muted">O'rnatilgan versiya: <b>${esc((state.update && state.update.current) || "")}</b></p>
+      <div id="update-box"><p class="muted">Tekshirilmoqda...</p></div>
+      <div class="actions"><button class="btn" id="recheck">${icon("search")} Qayta tekshirish</button></div>
+    </div>`);
+  const box = $("#update-box", view);
+  const show = (u) => {
+    state.update = u;
+    box.innerHTML = updateHtml(u);
+    const btn = $("#do-update", box);
+    if (btn && u.kind === "apk") btn.addEventListener("click", () => {
+      window.EproPosApp.installApk(u.apk_url);
+      btn.disabled = true;
+      btn.innerHTML = "Yuklab olinmoqda... (bildirishnomalarni kuzating)";
+    });
+    else if (btn) btn.addEventListener("click", safe(async () => {
+      if (!confirm(`EproPos ${u.latest} ga yangilansinmi? Dastur bir necha soniyaga yopilib, qayta ochiladi.`)) return;
+      btn.disabled = true;
+      btn.innerHTML = "Yuklab olinmoqda...";
+      const res = await api("POST", "/api/update/install");
+      box.innerHTML = `<div class="notice">⏳ Yangilandi (${esc(res.version)}). Dastur qayta ishga tushmoqda...</div>`;
+      waitRestart(res.version, box);
+    }));
+  };
+  const load = async (force) => {
+    box.innerHTML = `<p class="muted">Tekshirilmoqda...</p>`;
+    show(await api("GET", "/api/update" + (force ? "?force=1" : "")));
+  };
+  $("#recheck", view).addEventListener("click", safe(() => load(true)));
+  await load(false);
+}
+
+// Server qayta ishga tushguncha kutib, sahifani yangilaymiz
+function waitRestart(version, box) {
+  const started = Date.now();
+  const tick = async () => {
+    try {
+      const res = await fetch("/api/sync/hello", { cache: "no-store" });
+      const info = await res.json();
+      if (info.version === version) {
+        location.reload();
+        return;
+      }
+    } catch { /* hali ishga tushmagan */ }
+    if (Date.now() - started > 90000) {
+      box.innerHTML = `<div class="notice error-notice">Dastur qayta ochilmadi. EproPos yorlig'i orqali qayta oching.</div>`;
+      return;
+    }
+    setTimeout(tick, 1500);
+  };
+  setTimeout(tick, 2500);
+}
+
 // Telefonda: yuqori panelda sinxronlash holati (har 30 soniyada yangilanadi)
 async function refreshSyncBadge() {
   const el = $("#sync-badge");
@@ -3384,6 +3473,7 @@ const routes = [
   [/^#\/settings$/, viewSettings, ["settings"]],
   [/^#\/settings\/receipt$/, viewReceiptSettings, ["settings"]],
   [/^#\/settings\/sync$/, viewSync, ["settings"]],
+  [/^#\/settings\/update$/, viewUpdate, ["settings"]],
   [/^#\/journal$/, viewJournal, ["journal"]],
   [/^#\/integrations$/, viewIntegrations, ["integrations"]],
   [/^#\/integrations\/telegram$/, viewTelegram, ["integrations"]],

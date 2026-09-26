@@ -8,17 +8,22 @@ import atexit
 import base64
 import hashlib
 import hmac
+import io
 import json
 import mimetypes
 import os
 import re
 import secrets
+import shutil
 import socket
 import sqlite3
+import subprocess
 import sys
 import threading
 import time
+import urllib.request
 import webbrowser
+import zipfile
 from datetime import datetime, timedelta
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -3256,7 +3261,8 @@ def client_ip(handler):
 
 
 def sync_hello(conn):
-    return {"app": "EproPos", "role": ROLE, "node": conn.sync_node, "shop": get_settings(conn)["shop_name"]}
+    return {"app": "EproPos", "role": ROLE, "node": conn.sync_node, "shop": get_settings(conn)["shop_name"],
+            "version": RUNNING_VERSION}
 
 
 def sync_pair(handler, conn, data):
@@ -3553,6 +3559,154 @@ def sync_internet(conn, user, params, data, query):
     write_journal(conn, user, "settings", entry(
         "Internet orqali sinxronlash " + ("yoqildi" if data.get("enabled") else "o'chirildi"), ""), "sync_internet")
     return internet.status()
+
+
+# --- dastur ichida yangilash
+
+UPDATE_REPO = os.environ.get("EPROPOS_UPDATE_REPO", "ndoston1202-glitch/salespos1")
+UPDATE_BRANCH = "main"
+APK_VERSION = int(os.environ.get("EPROPOS_APK_VERSION") or 0)  # telefonda: o'rnatilgan APK raqami
+APK_URL = f"https://github.com/{UPDATE_REPO}/releases/download/android-latest/EproPos.apk"
+KEEP = ("epropos.db", "epropos.pid", "epropos.log", "uploads/", "tools/", ".git/")  # yangilanishda tegilmaydi
+
+
+def app_version():
+    try:
+        with open(os.path.join(BASE_DIR, "version.json"), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {"version": "0"}
+
+
+def version_key(v):
+    return tuple(int(x) for x in re.findall(r"\d+", str(v))) or (0,)
+
+
+def fetch_json(url, timeout=20):
+    req = urllib.request.Request(url, headers={"User-Agent": "EproPos", "Cache-Control": "no-cache"})
+    with urllib.request.urlopen(req, timeout=timeout) as res:
+        return json.loads(res.read().decode("utf-8-sig"))
+
+
+def install_zip(data, target):
+    """GitHub ZIP arxividagi fayllarni dastur papkasiga yozadi (baza, rasmlar va .git ga tegmaydi)."""
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        names = z.namelist()
+        root = names[0].split("/")[0] + "/" if names else ""
+        if root + "server.py" not in names or root + "version.json" not in names:
+            raise ApiError(502, "Yuklangan arxiv noto'g'ri")
+        base = os.path.realpath(target)
+        for name in names:
+            rel = name[len(root):]
+            if not rel or name.endswith("/") or rel.startswith(KEEP):
+                continue
+            dest = os.path.realpath(os.path.join(base, rel))
+            if not dest.startswith(base + os.sep):
+                continue
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            tmp = dest + ".yangi"
+            with z.open(name) as src, open(tmp, "wb") as out:
+                shutil.copyfileobj(src, out)
+            os.replace(tmp, dest)
+
+
+class Updater:
+    def __init__(self):
+        self.cache = None
+        self.checked = 0
+        self.busy = False
+
+    def check(self, force=False):
+        if self.cache and not force and time.time() - self.checked < 3600:
+            return self.cache
+        res = {"kind": "apk" if ROLE == "phone" else "desktop", "current": RUNNING_VERSION, "available": False}
+        try:
+            if ROLE == "phone":
+                latest = fetch_json(APK_URL.rsplit("/", 1)[0] + "/version.json")
+                res.update(latest=latest.get("version"), notes=latest.get("notes") or [], apk_url=APK_URL,
+                           available=APK_VERSION > 0 and int(latest.get("version_code") or 0) > APK_VERSION)
+            else:
+                latest = fetch_json(os.environ.get("EPROPOS_UPDATE_VERSION_URL") or
+                                    f"https://raw.githubusercontent.com/{UPDATE_REPO}/{UPDATE_BRANCH}/version.json")
+                res.update(latest=latest.get("version"), notes=latest.get("notes") or [],
+                           available=version_key(latest.get("version")) > version_key(RUNNING_VERSION))
+        except Exception as e:
+            res["error"] = f"Yangilanishni tekshirib bo'lmadi (internet bormi?): {e}"
+            return res
+        self.cache, self.checked = res, time.time()
+        return res
+
+    def install(self):
+        """Kompyuterda: yangi versiyani yuklab olib o'rnatadi va serverni qayta ishga tushiradi."""
+        if self.busy:
+            raise ApiError(409, "Yangilanish allaqachon ketmoqda")
+        self.busy = True
+        try:
+            if os.path.isdir(os.path.join(BASE_DIR, ".git")) and shutil.which("git"):
+                out = subprocess.run(["git", "pull", "--ff-only"], cwd=BASE_DIR, capture_output=True, text=True,
+                                     timeout=180, env=dict(os.environ, GIT_TERMINAL_PROMPT="0"))
+                if out.returncode != 0:
+                    raise ApiError(502, "Yangilab bo'lmadi: " + (out.stderr or out.stdout).strip()[-300:])
+            else:
+                url = (os.environ.get("EPROPOS_UPDATE_ZIP") or
+                       f"https://github.com/{UPDATE_REPO}/archive/refs/heads/{UPDATE_BRANCH}.zip")
+                req = urllib.request.Request(url, headers={"User-Agent": "EproPos"})
+                try:
+                    with urllib.request.urlopen(req, timeout=120) as res:
+                        data = res.read()
+                except OSError as e:
+                    raise ApiError(502, f"Yangi versiyani yuklab bo'lmadi: {e}")
+                install_zip(data, BASE_DIR)
+            self.cache = None
+            version = app_version().get("version")
+            threading.Thread(target=restart_server, daemon=True).start()
+            return {"ok": True, "version": version}
+        finally:
+            self.busy = False
+
+
+updater = Updater()
+RUNNING_VERSION = app_version().get("version")  # ishlab turgan kod versiyasi (fayl yangilansa ham o'zgarmaydi)
+http_server = None
+
+
+restart_requested = threading.Event()
+
+
+def restart_server():
+    """Yangi kod kuchga kirishi uchun server o'zini qayta ishga tushiradi (desktop oyna ochiq qoladi).
+    serve_forever to'xtatiladi, yangi jarayonni esa main() ishga tushiradi."""
+    time.sleep(1.0)  # javob brauzerga yetib borsin
+    if os.environ.get("EPROPOS_NO_RESTART") or not http_server:
+        return
+    restart_requested.set()
+    http_server.shutdown()
+
+
+def spawn_new_server():
+    if internet and internet.tunnel:
+        internet.tunnel.stop()
+    http_server.server_close()
+    flags = (subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP) if os.name == "nt" else 0
+    log = open(os.path.join(BASE_DIR, "epropos.log"), "a", encoding="utf-8")
+    subprocess.Popen([sys.executable, os.path.join(BASE_DIR, "server.py"), "--no-browser", "--restart"],
+                     cwd=BASE_DIR, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                     creationflags=flags, close_fds=True, start_new_session=os.name != "nt")
+    os._exit(0)
+
+
+@route("GET", "/api/update", ("settings",))
+def update_check(conn, user, params, data, query):
+    force = query.get("force", ["0"])[0] == "1"
+    return Deferred(lambda: updater.check(force))
+
+
+@route("POST", "/api/update/install", ("settings",))
+def update_install(conn, user, params, data, query):
+    if ROLE != "hub":
+        raise ApiError(400, "Telefonda ilova yangi APK orqali yangilanadi")
+    write_journal(conn, user, "settings", entry("Dastur yangilandi", f"{app_version().get('version')} dan"), "update")
+    return Deferred(updater.install)
 
 
 # --- jurnal sahifasi
@@ -3954,8 +4108,17 @@ def make_server(port=PORT, host="0.0.0.0", poll_bots=False):
 
 
 def main():
+    global http_server
     try:
-        server = make_server(poll_bots=True)
+        for attempt in range(40):  # yangilanishdan keyin: eski jarayon portni bo'shatguncha kutamiz
+            try:
+                server = make_server(poll_bots=True)
+                break
+            except OSError:
+                if "--restart" not in sys.argv or attempt == 39:
+                    raise
+                time.sleep(0.5)
+        http_server = server
     except OSError:
         print(f"XATO: {PORT}-port band. EproPos allaqachon ishlayotgan bo'lishi mumkin.")
         print(f"Brauzerda oching: http://localhost:{PORT}")
@@ -3983,6 +4146,8 @@ def main():
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nTo'xtatildi.")
+    if restart_requested.is_set():  # dastur yangilandi - yangi kod bilan qayta ishga tushamiz
+        spawn_new_server()
 
 
 if __name__ == "__main__":

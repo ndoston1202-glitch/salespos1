@@ -9,7 +9,7 @@ import threading
 _server = None
 
 
-def start(data_dir, static_dir, port=8100):
+def start(data_dir, static_dir, port=8100, apk_version=0):
     """Serverni fonda ishga tushiradi va ochilgan portni qaytaradi."""
     global _server
     if _server is not None:
@@ -19,6 +19,7 @@ def start(data_dir, static_dir, port=8100):
     os.environ["EPROPOS_DB"] = os.path.join(data_dir, "epropos.db")
     os.environ["EPROPOS_UPLOADS"] = os.path.join(data_dir, "uploads")
     os.environ["EPROPOS_STATIC"] = static_dir
+    os.environ["EPROPOS_APK_VERSION"] = str(apk_version)  # yangilanishni tekshirish uchun
     import server  # sozlamalar (yo'llar) import paytida o'qiladi
 
     last = None
