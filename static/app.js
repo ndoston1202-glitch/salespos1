@@ -3610,9 +3610,24 @@ function iosAppCard(apps) {
         <li>iPhone'da: <b>Sozlamalar → Umumiy → VPN va qurilmalarni boshqarish</b> → Apple ID'ingizga <b>ishonish</b>
           (iOS 16+ da: <b>Maxfiylik → Dasturchi rejimi</b> ni yoqing)</li>
         <li>Shu tugmani bosing — AltStore'ga EproPos manbasi qo'shiladi, keyin <b>EproPos → Free (o'rnatish)</b>:
-          <a class="btn primary big" href="altstore://source?url=${encodeURIComponent(apps.altstore)}">${icon("download")} AltStore'ga qo'shish</a>
-          <small class="muted">Tugma ishlamasa: AltStore → <b>Browse → Sources → +</b> → <code>${esc(apps.altstore)}</code></small></li>
+          <a class="btn primary big altstore-link" href="altstore://source?url=${encodeURIComponent(apps.altstore)}">${icon("download")} AltStore'ga qo'shish</a>
+          <div class="notice altstore-hint hidden">AltStore ochilmadi — demak u hali iPhone'da o'rnatilmagan.
+            Avval 1-qadamni bajaring (AltStore ikonkasi iPhone ekranida paydo bo'lishi kerak) yoki pastdagi
+            <b>Sideloadly</b> usulidan foydalaning.</div>
+          <small class="muted">Qo'lda: AltStore → <b>Browse → Sources → +</b> → shu manzilni qo'ying:</small>
+          <div class="copy-row"><code>${esc(apps.altstore)}</code>
+            <button type="button" class="btn small copy-btn" data-copy="${esc(apps.altstore)}">Nusxa olish</button></div></li>
       </ol>
+      <details class="alt-method"><summary><b>Oddiyroq usul: Sideloadly (kompyuter orqali)</b></summary>
+        <ol class="help-list">
+          <li>Kompyuterga <b>iTunes</b> va <a href="https://sideloadly.io" target="_blank" rel="noopener">Sideloadly</a> ni o'rnating</li>
+          <li><a href="${esc(apps.ipa)}">EproPos.ipa</a> ni kompyuterga yuklab oling</li>
+          <li>iPhone'ni kabel bilan ulang, Sideloadly'ga EproPos.ipa ni tashlang, Apple ID'ingizni yozib <b>Start</b></li>
+          <li>iPhone'da: <b>Sozlamalar → Umumiy → VPN va qurilmalarni boshqarish</b> → Apple ID'ingizga ishonish
+            (iOS 16+: <b>Maxfiylik → Dasturchi rejimi</b>)</li>
+        </ol>
+        <p class="muted">Yangilash va har 7 kunlik qayta imzolash — xuddi shunday Sideloadly orqali (ma'lumotlar o'chmaydi).</p>
+      </details>
       <p class="muted">AltStore ilovani har 7 kunda o'zi yangilab turadi (iPhone kompyuterdagi AltServer bilan bitta Wi-Fi'da
         bo'lsa). Yangi versiyalar AltStore → <b>My Apps</b> da chiqadi.
         <a href="${esc(apps.ipa)}">EproPos.ipa</a> ni Sideloadly bilan ham o'rnatish mumkin.</p>
@@ -3645,12 +3660,30 @@ async function viewMobileApp() {
       <div class="app-cards">${androidAppCard(apps)}${iosAppCard(apps)}</div>`;
     if (url) setTimeout(() => drawQr($("#qr"), url), 0);
   }
-  layout(`<div class="panel sync-panel" style="max-width:900px">
+  const view = layout(`<div class="panel sync-panel" style="max-width:900px">
       <h2>📱 Mobil ilova</h2>
       <p class="muted">Ilova telefonning o'zida internetsiz ishlaydi va kompyuterdagi EproPos bilan Wi-Fi yoki internet orqali
         sinxronlanadi. Bir marta o'rnatiladi, keyin faqat yangilanadi.</p>
       ${body}
     </div>`);
+  $$(".copy-btn", view).forEach((b) => b.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(b.dataset.copy);
+    } catch {
+      const t = document.createElement("textarea");
+      t.value = b.dataset.copy;
+      document.body.appendChild(t);
+      t.select();
+      document.execCommand("copy");
+      t.remove();
+    }
+    toast("Nusxa olindi ✅");
+  }));
+  // AltStore o'rnatilmagan bo'lsa havola hech narsa qilmaydi - tushuntirish ko'rsatamiz
+  $$(".altstore-link", view).forEach((a) => a.addEventListener("click", () => {
+    const hint = $(".altstore-hint", a.parentNode);
+    setTimeout(() => { if (!document.hidden && hint) hint.classList.remove("hidden"); }, 2000);
+  }));
 }
 
 async function drawQr(canvas, text) {

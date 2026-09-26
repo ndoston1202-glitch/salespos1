@@ -1278,3 +1278,8 @@ a.kpi:hover { border-color: var(--primary); }
 .app-open canvas { flex: none; border-radius: 8px; }
 .big-code { font-size: 18px; font-weight: 700; color: var(--primary); }
 @media (max-width: 760px) { .app-cards { grid-template-columns: 1fr; } .app-open { flex-direction: column; } }
+.copy-row { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+.copy-row code { flex: 1; min-width: 0; font-size: 12px; }
+.alt-method { margin-top: 10px; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 10px; }
+.alt-method summary { cursor: pointer; }
+.altstore-hint { margin: 8px 0; }

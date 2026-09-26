@@ -1,9 +1,9 @@
 {
-  "version": "1.6.0",
+  "version": "1.6.1",
   "date": "2026-09-26",
   "notes": [
+    "Mobil ilova sahifasi: iPhone uchun Sideloadly usuli, manzilni nusxalash, AltStore bo'lmasa tushuntirish",
     "iPhone ilovasi (AltStore orqali): internetsiz ishlaydi, kompyuter bilan sinxronlanadi",
-    "iPhone va telefon brauzerida ham kamera bilan shtrix-kod skanerlash (surat orqali)",
-    "Telefonda kamera bilan shtrix-kod skanerlash: Kassa, Kirim, Inventarizatsiya va mahsulot kartasida 📷 tugma"
+    "iPhone va telefon brauzerida ham kamera bilan shtrix-kod skanerlash (surat orqali)"
   ]
 }
