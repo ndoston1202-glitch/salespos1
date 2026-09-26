@@ -892,8 +892,10 @@ function printReceipt(order) {
   area.className = cfg.paper_width === 58 ? "paper-58" : "";
   area.innerHTML = receiptHtml(order, cfg);
   const img = $("img", area);
-  if (img && !img.complete) img.onload = img.onerror = () => window.print();
-  else window.print();
+  // Android ilovada - tizimning chop etish oynasi (window.print WebView'da ishlamaydi)
+  const print = () => (window.EproPosApp ? window.EproPosApp.print() : window.print());
+  if (img && !img.complete) img.onload = img.onerror = print;
+  else print();
 }
 
 

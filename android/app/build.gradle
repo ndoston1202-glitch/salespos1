@@ -1,0 +1,82 @@
+// EproPos Android ilovasi: Python server (server.py) telefonning o'zida ishlaydi,
+// oyna esa WebView. Kompyuter bilan bitta Wi-Fi'da bo'lganda ma'lumotlar sinxronlanadi.
+plugins {
+    id "com.android.application"
+    id "com.chaquo.python"
+}
+
+def repoRoot = rootProject.projectDir.parentFile
+def generated = layout.buildDirectory.dir("epropos").get().asFile
+
+// Asosiy dastur fayllari (server.py, static/...) bitta joyda - android/ ga nusxa ko'chiriladi
+tasks.register("copyEproPos", Sync) {
+    from(repoRoot) {
+        include "server.py", "sync.py", "telegram.py", "xlsx.py"
+        into "python"
+    }
+    from(new File(repoRoot, "static")) {
+        into "assets/static"
+    }
+    into generated
+}
+preBuild.dependsOn "copyEproPos"
+
+android {
+    namespace "uz.epropos.app"
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "uz.epropos.app"
+        minSdk 24
+        targetSdk 34
+        versionCode Integer.parseInt(System.getenv("VERSION_CODE") ?: "1")
+        versionName "1.0." + (System.getenv("VERSION_CODE") ?: "1")
+        ndk {
+            abiFilters "arm64-v8a", "armeabi-v7a", "x86_64"
+        }
+    }
+
+    signingConfigs {
+        release {
+            storeFile file("../epropos.keystore")
+            storePassword System.getenv("KEYSTORE_PASSWORD") ?: "epropos2026"
+            keyAlias "epropos"
+            keyPassword System.getenv("KEYSTORE_PASSWORD") ?: "epropos2026"
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+        debug {
+            signingConfig signingConfigs.release
+        }
+    }
+
+    sourceSets {
+        main {
+            assets.srcDirs += new File(generated, "assets")
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+chaquopy {
+    defaultConfig {
+        version = "3.11"
+        pyc {
+            src = false
+        }
+    }
+    sourceSets {
+        main {
+            srcDir new File(generated, "python")
+        }
+    }
+}
