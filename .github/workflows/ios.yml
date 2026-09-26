@@ -48,13 +48,19 @@ jobs:
         run: |
           xcodebuild build -project build/epropos/ios/xcode/EproPos.xcodeproj -configuration Release \
             -sdk iphoneos -arch arm64 CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
-            -quiet
+            EXPANDED_CODE_SIGN_IDENTITY=- -quiet
           APP=$(find build/epropos/ios/xcode -type d -name "EproPos.app" -path "*Release-iphoneos*" | head -1)
           echo "App: $APP"
           mkdir -p ipa/Payload
           cp -R "$APP" ipa/Payload/
           (cd ipa && zip -qry ../EproPos.ipa Payload)
           ls -la EproPos.ipa
+          # ilova ichida dastur, sahifalar va Python borligini tekshiramiz
+          unzip -l EproPos.ipa > contents.txt
+          for f in "core/server.py" "core/sync.py" "core/mobile_main.py" "core/static/index.html" "core/static/vendor/zxing.min.js" "Python.framework" "toga_iOS"; do
+            grep -q "$f" contents.txt || { echo "IPA ichida yo'q: $f"; exit 1; }
+          done
+          echo "IPA tekshirildi"
 
       - uses: actions/upload-artifact@v4
         with:

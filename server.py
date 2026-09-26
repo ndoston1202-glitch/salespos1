@@ -789,7 +789,8 @@ def delete_product(conn, user, params, data, query):
 
 @route("GET", "/api/settings")
 def read_settings(conn, user, params, data, query):
-    return dict(get_settings(conn), role=ROLE, platform=PLATFORM, native=sorted(NATIVE))
+    return dict(get_settings(conn), role=ROLE, platform=PLATFORM, native=sorted(NATIVE),
+                apps={"apk": APK_URL, "ipa": IOS_RELEASE + "/EproPos.ipa", "altstore": ALTSTORE_SOURCE})
 
 
 @route("PUT", "/api/settings", ("settings",))

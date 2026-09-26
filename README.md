@@ -92,6 +92,15 @@ Yuklab olish: **[EproPos.apk](https://github.com/ndoston1202-glitch/salespos1/re
 
 APK `android/` papkasidan GitHub Actions'da yig'iladi (Gradle + Chaquopy).
 
+## 🍎 iPhone ilova
+- Telefonda brauzerda kompyuter manzilini oching (masalan `http://192.168.1.10:8100`) → **Sozlamalar → Mobil ilova**:
+  qurilmangizga mos ilova (Android APK yoki iPhone) taklif qilinadi. Kompyuterda shu sahifada QR kod ham bor
+- iPhone ilovasi **AltStore** orqali o'rnatiladi (bepul): AltStore'ga manba qo'shing —
+  `https://github.com/ndoston1202-glitch/salespos1/releases/download/ios-latest/altstore.json` → EproPos → o'rnatish.
+  Yangilanishlar AltStore → My Apps da chiqadi. Bepul Apple ID bilan AltStore ilovani har 7 kunda o'zi qayta imzolaydi
+- IPA: [EproPos.ipa](https://github.com/ndoston1202-glitch/salespos1/releases/download/ios-latest/EproPos.ipa)
+  (Sideloadly bilan ham o'rnatish mumkin). `ios/` papkasidan GitHub Actions'da (macOS) yig'iladi
+
 ## 🛠️ Texnologiya
 - Backend: Python standart kutubxonasi (`http.server` + `sqlite3`) — `server.py`
 - Frontend: oddiy HTML/CSS/JavaScript — `static/`

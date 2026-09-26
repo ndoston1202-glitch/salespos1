@@ -569,6 +569,7 @@ const SETTINGS_TABS = [
   { perm: "settings", href: "#/settings/receipt", icon: "sales", name: "Chek" },
   { perm: "settings", href: "#/settings/sync", icon: "transfer", name: "Sinxronlash" },
   { perm: "settings", href: "#/settings/update", icon: "download", name: "Yangilash" },
+  { perm: "settings", href: "#/settings/mobile", icon: "phone", name: "Mobil ilova" },
 ];
 
 function visibleNav() {
@@ -3579,6 +3580,98 @@ async function viewUpdate() {
   await load(false);
 }
 
+// ------------------------------------------------------------ mobil ilovani yuklab olish
+
+const IS_IOS = /iPhone|iPad|iPod/i.test(navigator.userAgent)
+  || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);  // iPadOS
+const IS_ANDROID = /Android/i.test(navigator.userAgent);
+
+function androidAppCard(apps) {
+  return `<div class="app-card">
+      <h3>🤖 Android</h3>
+      <a class="btn primary big" href="${esc(apps.apk)}">${icon("download")} Android ilovani yuklab olish (APK)</a>
+      <ol class="help-list">
+        <li>Yuklangan <b>EproPos.apk</b> ni oching → <b>"O'rnatish"</b></li>
+        <li>Telefon so'rasa — <b>"Noma'lum manbalardan o'rnatish"</b> ga ruxsat bering</li>
+        <li>Ilovada: <b>Sozlamalar → Sinxronlash</b> → <i>Kompyuterni qidirish</i> → administrator paroli</li>
+      </ol>
+      <p class="muted">Keyingi yangilanishlar ilovaning o'zida: <b>Sozlamalar → Yangilash</b>.</p>
+    </div>`;
+}
+
+function iosAppCard(apps) {
+  return `<div class="app-card">
+      <h3>🍎 iPhone / iPad</h3>
+      <p class="muted">Apple ilovani faqat App Store yoki <b>AltStore</b> orqali o'rnatishga ruxsat beradi. AltStore bepul,
+        bir marta sozlanadi — keyin EproPos shu yerdan o'rnatiladi va yangilanadi.</p>
+      <ol class="help-list">
+        <li>Kompyuterga <b>AltServer</b> ni o'rnating: <a href="https://altstore.io" target="_blank" rel="noopener">altstore.io</a>
+          → iPhone'ni kabel bilan ulab, AltServer menyusidan <b>Install AltStore</b></li>
+        <li>iPhone'da: <b>Sozlamalar → Umumiy → VPN va qurilmalarni boshqarish</b> → Apple ID'ingizga <b>ishonish</b>
+          (iOS 16+ da: <b>Maxfiylik → Dasturchi rejimi</b> ni yoqing)</li>
+        <li>Shu tugmani bosing — AltStore'ga EproPos manbasi qo'shiladi, keyin <b>EproPos → Free (o'rnatish)</b>:
+          <a class="btn primary big" href="altstore://source?url=${encodeURIComponent(apps.altstore)}">${icon("download")} AltStore'ga qo'shish</a>
+          <small class="muted">Tugma ishlamasa: AltStore → <b>Browse → Sources → +</b> → <code>${esc(apps.altstore)}</code></small></li>
+      </ol>
+      <p class="muted">AltStore ilovani har 7 kunda o'zi yangilab turadi (iPhone kompyuterdagi AltServer bilan bitta Wi-Fi'da
+        bo'lsa). Yangi versiyalar AltStore → <b>My Apps</b> da chiqadi.
+        <a href="${esc(apps.ipa)}">EproPos.ipa</a> ni Sideloadly bilan ham o'rnatish mumkin.</p>
+    </div>`;
+}
+
+async function viewMobileApp() {
+  const apps = state.settings.apps || {};
+  const inApp = !!window.EproPosApp || state.settings.platform === "ios" || state.settings.platform === "android";
+  let body;
+  if (inApp) {
+    body = `<div class="sync-card"><div><small class="muted">Holati</small><b>Siz EproPos ilovasidasiz ✅</b></div></div>
+      <p class="muted">Yangi versiyalar: <a href="#/settings/update">Sozlamalar → Yangilash</a>.</p>`;
+  } else if (IS_ANDROID) {
+    body = androidAppCard(apps);
+  } else if (IS_IOS) {
+    body = iosAppCard(apps);
+  } else {
+    // kompyuterda: telefonda ochish uchun manzil va QR kod
+    const st = await api("GET", "/api/sync/status").catch(() => ({}));
+    const url = (st.urls || [])[0];
+    body = `${url ? `<div class="app-open">
+        <canvas id="qr" width="180" height="180"></canvas>
+        <div><h3>1. Telefonda EproPos'ni oching</h3>
+          <p class="muted">Telefon shu kompyuter bilan bitta Wi-Fi'da bo'lsin. QR kodni telefon kamerasi bilan skanerlang
+            yoki brauzerda manzilni yozing:</p><p><code class="big-code">${esc(url)}</code></p>
+          <p class="muted">Telefonda <b>Sozlamalar → Mobil ilova</b> bo'limi qurilmangizga mos ilovani o'zi taklif qiladi.</p></div>
+      </div>` : ""}
+      <h3>2. Ilovani o'rnating</h3>
+      <div class="app-cards">${androidAppCard(apps)}${iosAppCard(apps)}</div>`;
+    if (url) setTimeout(() => drawQr($("#qr"), url), 0);
+  }
+  layout(`<div class="panel sync-panel" style="max-width:900px">
+      <h2>📱 Mobil ilova</h2>
+      <p class="muted">Ilova telefonning o'zida internetsiz ishlaydi va kompyuterdagi EproPos bilan Wi-Fi yoki internet orqali
+        sinxronlanadi. Bir marta o'rnatiladi, keyin faqat yangilanadi.</p>
+      ${body}
+    </div>`);
+}
+
+async function drawQr(canvas, text) {
+  if (!canvas) return;
+  try {
+    await loadScript("/vendor/zxing.min.js");
+    const ZX = window.ZXing;
+    const hints = new Map();
+    hints.set(ZX.EncodeHintType.MARGIN, 1);
+    const m = new ZX.QRCodeWriter().encode(text, ZX.BarcodeFormat.QR_CODE, 0, 0, hints);
+    const n = m.getWidth();
+    const cell = Math.floor(canvas.width / n);
+    const off = Math.floor((canvas.width - cell * n) / 2);
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#0f1a14";
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (m.get(x, y)) ctx.fillRect(off + x * cell, off + y * cell, cell, cell);
+  } catch { canvas.remove(); }
+}
+
 // Server qayta ishga tushguncha kutib, sahifani yangilaymiz
 function waitRestart(version, box) {
   const started = Date.now();
@@ -3641,6 +3734,7 @@ const routes = [
   [/^#\/settings\/receipt$/, viewReceiptSettings, ["settings"]],
   [/^#\/settings\/sync$/, viewSync, ["settings"]],
   [/^#\/settings\/update$/, viewUpdate, ["settings"]],
+  [/^#\/settings\/mobile$/, viewMobileApp, ["settings"]],
   [/^#\/journal$/, viewJournal, ["journal"]],
   [/^#\/integrations$/, viewIntegrations, ["integrations"]],
   [/^#\/integrations\/telegram$/, viewTelegram, ["integrations"]],

@@ -1267,3 +1267,14 @@ a.kpi:hover { border-color: var(--primary); }
 .scan-overlay .scan-frame { position: relative; width: min(80vw, 360px); height: 180px; border: 3px solid #3ecd56;
   border-radius: 16px; box-shadow: 0 0 0 9999px rgba(0, 0, 0, .45); }
 .scan-overlay p, .scan-overlay .btn { position: relative; }
+
+/* --- mobil ilova */
+.app-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.app-card { border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; margin-bottom: 12px; }
+.app-card .btn.big { display: flex; justify-content: center; align-items: center; gap: 8px; margin: 10px 0; text-decoration: none; }
+.app-card code { word-break: break-all; }
+.app-open { display: flex; gap: 20px; align-items: center; padding: 16px; border-radius: var(--radius); background: #f6fcf7;
+  border: 1px solid var(--line); margin-bottom: 16px; }
+.app-open canvas { flex: none; border-radius: 8px; }
+.big-code { font-size: 18px; font-weight: 700; color: var(--primary); }
+@media (max-width: 760px) { .app-cards { grid-template-columns: 1fr; } .app-open { flex-direction: column; } }
