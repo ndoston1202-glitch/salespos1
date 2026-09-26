@@ -71,7 +71,8 @@ class UpdateTest(unittest.TestCase):
             threading.Thread(target=web.serve_forever, daemon=True).start()
             base = f"http://127.0.0.1:{web.server_address[1]}"
             port = free_port()
-            env = dict(os.environ, EPROPOS_PORT=str(port), EPROPOS_UPDATE_ZIP=base + "/main.zip",
+            clean = {k: v for k, v in os.environ.items() if not k.startswith("EPROPOS_")}  # boshqa testlarniki
+            env = dict(clean, EPROPOS_PORT=str(port), EPROPOS_UPDATE_ZIP=base + "/main.zip",
                        EPROPOS_UPDATE_VERSION_URL=base + "/version.json", NO_PROXY="127.0.0.1", no_proxy="127.0.0.1")
             log = open(os.path.join(tmp, "server.log"), "w")
             subprocess.Popen([sys.executable, os.path.join(app, "server.py"), "--no-browser"], cwd=app, env=env,
@@ -84,7 +85,14 @@ class UpdateTest(unittest.TestCase):
                         break
                     except OSError:
                         time.sleep(0.1)
-                pid_before = open(os.path.join(app, "epropos.pid")).read()
+                pid_path = os.path.join(app, "epropos.pid")
+                for _ in range(50):  # pid fayli port ochilgandan keyin yoziladi
+                    if os.path.exists(pid_path):
+                        break
+                    time.sleep(0.1)
+                self.assertTrue(os.path.exists(pid_path), open(os.path.join(tmp, "server.log")).read())
+                with open(pid_path) as f:
+                    pid_before = f.read()
                 _, p = client.call("POST", "/api/products", {"name": "Saqlanadigan tovar", "price": 700})
                 _, u = client.call("GET", "/api/update?force=1")
                 self.assertEqual((u["available"], u["current"], u["latest"]), (True, "1.0.0", "9.9.9"), u)
