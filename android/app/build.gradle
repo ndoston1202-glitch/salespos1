@@ -68,6 +68,11 @@ android {
     }
 }
 
+dependencies {
+    // Kamera bilan shtrix-kod skanerlash: Google'ning tayyor skaneri (kamera ruxsati shart emas)
+    implementation "com.google.android.gms:play-services-code-scanner:16.1.0"
+}
+
 chaquopy {
     defaultConfig {
         version = "3.11"

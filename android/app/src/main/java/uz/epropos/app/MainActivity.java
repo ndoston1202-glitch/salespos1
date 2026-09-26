@@ -43,6 +43,11 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import com.chaquo.python.PyObject;
+import com.google.mlkit.vision.barcode.common.Barcode;
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions;
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning;
+
+import org.json.JSONObject;
 import com.chaquo.python.Python;
 import com.chaquo.python.android.AndroidPlatform;
 
@@ -239,11 +244,45 @@ public class MainActivity extends Activity {
             return MainActivity.this.versionCode();
         }
 
+        /** Kamera bilan shtrix-kod o'qish; natija window.__eproScan(kod) ga qaytadi */
+        @JavascriptInterface
+        public void scanBarcode() {
+            ui.post(MainActivity.this::startScan);
+        }
+
         /** Yangi versiya APK sini yuklab olib, o'rnatish oynasini ochadi */
         @JavascriptInterface
         public void installApk(String url) {
             ui.post(() -> downloadApk(url));
         }
+    }
+
+    // ------------------------------------------------------------ shtrix-kod skaneri
+
+    private void startScan() {
+        GmsBarcodeScannerOptions options = new GmsBarcodeScannerOptions.Builder()
+                .setBarcodeFormats(Barcode.FORMAT_EAN_13, Barcode.FORMAT_EAN_8, Barcode.FORMAT_UPC_A,
+                        Barcode.FORMAT_UPC_E, Barcode.FORMAT_CODE_128, Barcode.FORMAT_CODE_39,
+                        Barcode.FORMAT_CODE_93, Barcode.FORMAT_ITF, Barcode.FORMAT_CODABAR, Barcode.FORMAT_QR_CODE)
+                .enableAutoZoom()
+                .build();
+        try {
+            GmsBarcodeScanning.getClient(this, options).startScan()
+                    .addOnSuccessListener(barcode -> sendScan(barcode.getRawValue()))
+                    .addOnCanceledListener(() -> sendScan(null))
+                    .addOnFailureListener(e -> {
+                        toast("Skanerni ochib bo'lmadi (Google Play xizmatlari kerak): " + e.getMessage());
+                        sendScan(null);
+                    });
+        } catch (Exception e) {
+            toast("Skanerni ochib bo'lmadi: " + e.getMessage());
+            sendScan(null);
+        }
+    }
+
+    private void sendScan(String code) {
+        String arg = code == null ? "null" : JSONObject.quote(code);
+        web.evaluateJavascript("window.__eproScan && window.__eproScan(" + arg + ")", null);
     }
 
     // ------------------------------------------------------------ ilovani yangilash

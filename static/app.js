@@ -129,6 +129,81 @@ function closeModal() {
   $("#modal-root").innerHTML = "";
 }
 
+// ------------------------------------------------------------ kamera bilan shtrix-kod skanerlash
+
+// Android ilovada - tizimning tayyor skaneri (Google), brauzerda - BarcodeDetector bo'lsa kamera oynasi
+function canScan() {
+  return !!(window.EproPosApp && window.EproPosApp.scanBarcode)
+    || ("BarcodeDetector" in window && navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+}
+
+function scanBarcode() {
+  if (window.EproPosApp && window.EproPosApp.scanBarcode) {
+    return new Promise((resolve) => {
+      window.__eproScan = (code) => { window.__eproScan = null; resolve(code || null); };
+      window.EproPosApp.scanBarcode();
+    });
+  }
+  return webScan();
+}
+
+async function webScan() {
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+  } catch {
+    toast("Kameraga ruxsat berilmadi", true);
+    return null;
+  }
+  const detector = new window.BarcodeDetector();
+  const box = document.createElement("div");
+  box.className = "scan-overlay";
+  box.innerHTML = `<video playsinline muted></video><div class="scan-frame"></div>
+    <p>Shtrix-kodni ramkaga to'g'rilang</p><button type="button" class="btn">Bekor qilish</button>`;
+  document.body.appendChild(box);
+  const video = $("video", box);
+  video.srcObject = stream;
+  await video.play().catch(() => {});
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (code) => {
+      if (done) return;
+      done = true;
+      stream.getTracks().forEach((t) => t.stop());
+      box.remove();
+      resolve(code);
+    };
+    $("button", box).addEventListener("click", () => finish(null));
+    const tick = async () => {
+      if (done) return;
+      try {
+        const found = await detector.detect(video);
+        if (found.length) return finish(found[0].rawValue);
+      } catch { /* kadr hali tayyor emas */ }
+      setTimeout(tick, 200);
+    };
+    tick();
+  });
+}
+
+// Qidiruv maydoni yoniga kamera tugmasi: o'qilgan kod maydonga yoziladi va forma yuboriladi
+function addScanButton(input, onCode) {
+  if (!canScan()) return;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "scan-btn";
+  btn.title = "Kamera bilan skanerlash";
+  btn.innerHTML = icon("camera");
+  btn.addEventListener("click", async () => {
+    const code = await scanBarcode();
+    if (!code) return;
+    if (navigator.vibrate) navigator.vibrate(60);
+    input.value = code;
+    onCode(code);
+  });
+  input.insertAdjacentElement("afterend", btn);
+}
+
 // Rasmni kichraytirib JPEG data URL qiladi (server va tarmoqqa yengil bo'lsin)
 function resizeImage(file, maxSize) {
   return new Promise((resolve, reject) => {
@@ -359,6 +434,7 @@ const ICONS = {
   search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
   upload: '<path d="M12 16V4M6 10l6-6 6 6M4 20h16"/>',
   download: '<path d="M12 4v12M6 10l6 6 6-6M4 20h16"/>',
+  camera: '<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>',
   scale: '<path d="M12 3v18M5 7h14M5 7l-3 7a4 4 0 0 0 6 0Zm14 0-3 7a4 4 0 0 0 6 0ZM8 21h8"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   in: '<path d="M12 5v14M5 12l7 7 7-7"/>',
@@ -767,6 +843,7 @@ async function viewPOS() {
     }
   });
   scan.addEventListener("input", renderGrid);
+  addScanButton(scan, () => $("#pos-search", view).dispatchEvent(new Event("submit", { cancelable: true })));
   $("#disc", view).addEventListener("input", () => renderCart());
   $("#clear", view).addEventListener("click", () => { if (!cart.length || confirm("Savat tozalansinmi?")) clearSale(); });
   $("#pay", view).addEventListener("click", pay);
@@ -1992,6 +2069,7 @@ function productSearch(root, onPick, placeholder) {
     <div class="picker-results"></div>`;
   const input = $("input", root);
   const results = $(".picker-results", root);
+  addScanButton(input, () => $("form", root).dispatchEvent(new Event("submit", { cancelable: true })));
   const choose = (p) => { onPick(p); input.value = ""; results.innerHTML = ""; input.focus(); };
   const find = () => {
     const q = input.value.trim().toLowerCase();
@@ -2468,6 +2546,7 @@ async function viewProducts() {
     $("#gen-code", m).addEventListener("click", safe(async () => {
       $("input[name=barcode]", m).value = (await api("GET", "/api/products/new-barcode")).barcode;
     }));
+    addScanButton($("input[name=barcode]", m), () => {});
     // skaner Enter bossa forma yuborilmasin - keyingi maydonga o'tamiz
     $("input[name=barcode]", m).addEventListener("keydown", (e) => {
       if (e.key === "Enter") { e.preventDefault(); $("select[name=category_id]", m).focus(); }
