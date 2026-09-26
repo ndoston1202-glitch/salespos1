@@ -17,6 +17,7 @@ import socket
 import sqlite3
 import sys
 import threading
+import time
 import webbrowser
 from datetime import datetime, timedelta
 from http.cookies import SimpleCookie
@@ -26,6 +27,7 @@ from xml.etree import ElementTree
 
 import sync
 import telegram
+from tunnel import Tunnel
 import xlsx
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -3246,6 +3248,13 @@ def hub_device(conn, token):
     return row
 
 
+def client_ip(handler):
+    """Tunnel orqali kelgan so'rovda haqiqiy IP Cloudflare sarlavhasida bo'ladi."""
+    if handler.relay:
+        return handler.headers.get("CF-Connecting-IP") or handler.client_address[0]
+    return handler.client_address[0]
+
+
 def sync_hello(conn):
     return {"app": "EproPos", "role": ROLE, "node": conn.sync_node, "shop": get_settings(conn)["shop_name"]}
 
@@ -3254,10 +3263,13 @@ def sync_pair(handler, conn, data):
     """Telefon kompyuterga ulanadi: administrator (yoki Sozlamalar ruxsati bor xodim) paroli bilan."""
     if ROLE != "hub":
         raise ApiError(400, "Bu qurilma kompyuter emas")
-    ip = handler.client_address[0]
+    ip = client_ip(handler)
     wait = LOGIN_GUARD.blocked(ip)
     if wait:
         raise ApiError(429, f"Ko'p noto'g'ri urinish. {wait} soniyadan keyin qayta urining")
+    if handler.relay and (not internet or not internet.code or sync.normalize_code(data.get("code")) != internet.code):
+        LOGIN_GUARD.fail(ip)  # internetdan ulanish uchun parol bilan birga internet kodi ham kerak
+        raise ApiError(403, "Internet kodi noto'g'ri")
     user = find_pin_user(conn, str(data.get("pin") or "").strip())
     if not user or not ({"settings"} & set(effective_permissions(user["role"], user["permissions"]))):
         LOGIN_GUARD.fail(ip)
@@ -3272,7 +3284,7 @@ def sync_pair(handler, conn, data):
     write_journal(conn, public_user(user), "settings", entry("Telefon kompyuterga ulandi", f"{name} · {ip}"), "sync_pair")
     secret = conn.execute("SELECT value FROM settings WHERE key = '_pin_secret'").fetchone()
     return {"token": token, "hub_node": conn.sync_node, "shop": get_settings(conn)["shop_name"],
-            "pin_secret": secret[0] if secret else None}
+            "pin_secret": secret[0] if secret else None, "internet": internet.info() if internet else None}
 
 
 def sync_exchange(handler, conn, data):
@@ -3292,25 +3304,29 @@ def sync_exchange(handler, conn, data):
                 applied = sync.apply(conn, changes, device["node"])
                 out, last, more = sync.collect(conn, int(data.get("since") or 0), sync.BATCH, exclude_origin=device["node"])
                 conn.execute("UPDATE sync_devices SET last_sync = ?, last_ip = ? WHERE id = ?",
-                             (now(), handler.client_address[0], device["id"]))
+                             (now(), client_ip(handler), device["id"]))
                 conn.commit()
             except Exception:
                 conn.rollback()
                 raise
             finally:
                 conn.execute("PRAGMA foreign_keys = ON")
-        return {"applied": applied, "changes": out, "seq": last, "more": more}
+        return {"applied": applied, "changes": out, "seq": last, "more": more,
+                "internet": internet.info() if internet else None}
     return run
 
 
 class SyncWorker:
-    """Telefonda: kompyuter bilan har 15 soniyada almashadi; kompyuter manzili o'zgarsa - tarmoqdan qayta topadi."""
+    """Telefonda: kompyuter bilan har 15 soniyada almashadi. Avval shu Wi-Fi'dagi manzil, bo'lmasa - internet
+    orqali (tunnel). Kompyuter manzili o'zgarsa: Wi-Fi'da qayta qidiriladi, internetda - internet kodi bo'yicha."""
 
     def __init__(self, conn):
         self.conn = conn
-        self.status = {"state": "idle", "last_ok": None, "last_error": None, "running": False}
+        self.status = {"state": "idle", "via": None, "last_ok": None, "last_error": None, "running": False}
         self.wake = threading.Event()
         self.fails = 0
+        self.rounds = 0
+        self.last_lookup = 0
 
     def start(self):
         threading.Thread(target=self.loop, daemon=True).start()
@@ -3326,7 +3342,14 @@ class SyncWorker:
 
     def cfg(self):
         with db_lock:
-            return {k: sync.meta(self.conn, k) for k in ("hub_url", "token", "hub_node", "last_pull", "last_push")}
+            return {k: sync.meta(self.conn, k) for k in
+                    ("hub_url", "public_url", "relay_code", "token", "hub_node", "last_pull", "last_push")}
+
+    def save(self, **values):
+        with db_lock:
+            for k, v in values.items():
+                sync.set_meta(self.conn, k, v)
+            self.conn.commit()
 
     def run_once(self):
         cfg = self.cfg()
@@ -3334,12 +3357,19 @@ class SyncWorker:
             return
         self.status["running"] = True
         try:
-            self.exchange(cfg)
+            url, via = self.pick(cfg)
+            res = self.exchange(cfg, url)
+            if "internet" in res:  # kompyuterda internet orqali ulanish yoqilgan/o'chirilgan
+                info = res["internet"] or {}
+                self.save(relay_code=info.get("code"), public_url=info.get("url") or (url if via == "internet" else None))
             self.fails = 0
-            self.status.update(state="ok", last_ok=now(), last_error=None)
+            self.rounds += 1
+            self.status.update(state="ok", via=via, last_ok=now(), last_error=None)
+            if via == "internet" and self.rounds % 20 == 1:
+                self.rediscover(cfg)  # telefon kompyuter turgan Wi-Fi'ga qaytgan bo'lishi mumkin
         except sync.SyncError as e:
             self.fails += 1
-            self.status.update(state="offline" if e.status is None else "error", last_error=str(e))
+            self.status.update(state="offline" if e.status is None else "error", via=None, last_error=str(e))
             if e.status == 401:
                 self.status["state"] = "unpaired"
             elif e.status is None and self.fails % 8 == 4:
@@ -3347,9 +3377,31 @@ class SyncWorker:
         finally:
             self.status["running"] = False
 
-    def exchange(self, cfg):
-        url = cfg["hub_url"].rstrip("/") + "/api/sync/exchange"
+    def pick(self, cfg):
+        """Kompyuterga yo'l: shu Wi-Fi -> oxirgi internet manzili -> internet kodi bo'yicha yangi manzil."""
+        def is_hub(url, timeout):
+            info = sync.hello(url, timeout)
+            return bool(info) and info.get("role") == "hub" and str(info.get("node")) == str(cfg["hub_node"])
+
+        if cfg["hub_url"] and is_hub(cfg["hub_url"], 2):
+            return cfg["hub_url"], "lan"
+        if cfg["public_url"] and is_hub(cfg["public_url"], 10):
+            return cfg["public_url"], "internet"
+        if cfg["relay_code"] and time.time() - self.last_lookup > 40:
+            self.last_lookup = time.time()
+            url = sync.relay_lookup(cfg["relay_code"])
+            if url and url != cfg["public_url"] and is_hub(url, 10):
+                self.save(public_url=url)
+                return url, "internet"
+        if cfg["relay_code"]:
+            raise sync.SyncError("Kompyuter topilmadi: na shu Wi-Fi'da, na internetda. "
+                                 "Kompyuterda EproPos ochiqligini va internet borligini tekshiring")
+        raise sync.SyncError("Kompyuter topilmadi (telefon kompyuter bilan bitta Wi-Fi'da emas)")
+
+    def exchange(self, cfg, hub_url):
+        url = hub_url.rstrip("/") + "/api/sync/exchange"
         pull, push = int(cfg["last_pull"] or 0), int(cfg["last_push"] or 0)
+        res = {}
         for _ in range(200):
             with db_lock:
                 local, push_to, local_more = sync.collect(self.conn, push, sync.BATCH, only_local=True)
@@ -3369,14 +3421,13 @@ class SyncWorker:
                 finally:
                     self.conn.execute("PRAGMA foreign_keys = ON")
             if not res.get("more") and not local_more:
-                return
+                break
+        return res
 
     def rediscover(self, cfg):
         for hub in sync.discover(PORT):
             if str(hub.get("node")) == str(cfg["hub_node"]):
-                with db_lock:
-                    sync.set_meta(self.conn, "hub_url", hub["url"])
-                    self.conn.commit()
+                self.save(hub_url=hub["url"])
                 return
 
 
@@ -3392,11 +3443,13 @@ def sync_status(conn, user, params, data, query):
         res["devices"] = rows(conn.execute(
             "SELECT id, node, name, created_at, last_sync, last_ip FROM sync_devices WHERE active = 1 ORDER BY id DESC"))
         res["urls"] = lan_urls()
+        res["internet"] = internet.status() if internet else None
         return res
-    cfg = {k: sync.meta(conn, k) for k in ("hub_url", "hub_shop", "token", "last_push")}
+    cfg = {k: sync.meta(conn, k) for k in ("hub_url", "public_url", "relay_code", "hub_shop", "token", "last_push")}
     pending = conn.execute("SELECT COUNT(*) FROM sync_changes WHERE origin = 'local' AND seq > ?",
                            (int(cfg["last_push"] or 0),)).fetchone()[0]
     res.update(paired=bool(cfg["token"]), hub_url=cfg["hub_url"], hub_shop=cfg["hub_shop"], pending=pending,
+               internet=bool(cfg["relay_code"]),
                **(sync_worker.status if sync_worker else {}))
     return res
 
@@ -3417,21 +3470,34 @@ def sync_connect(conn, user, params, data, query):
     """Telefonni kompyuterga ulash. Telefonda hali ma'lumot bo'lmasa - hammasi kompyuterdan olinadi."""
     if ROLE != "phone":
         raise ApiError(400, "Faqat telefondagi ilovada")
-    url = str(data.get("url") or "").strip().rstrip("/")
-    if not re.match(r"^https?://", url):
-        url = "http://" + url
-    if not re.search(r":\d+$", url.split("//", 1)[1]):
-        url += f":{PORT}"
+    raw = str(data.get("url") or "").strip().rstrip("/")
+    # internet kodi (masalan abcde-fghjk) - kompyuter boshqa tarmoqda bo'lsa ham ulanadi
+    code = None if re.search(r"[.:/]", raw) else sync.normalize_code(raw)
+    url = raw
+    if not code:
+        if not re.match(r"^https?://", url):
+            url = "http://" + url
+        if not re.search(r":\d+$", url.split("//", 1)[1]):
+            url += f":{PORT}"
     pin = str(data.get("pin") or "").strip()
 
     def run():
-        info = sync.hello(url, 3)
+        hub = url
+        if code:
+            hub = sync.relay_lookup(code)
+            if not hub:
+                raise ApiError(404, "Bu internet kodi bo'yicha kompyuter topilmadi. Kompyuterda EproPos ochiq va "
+                                    "\"Internet orqali\" yoqilganini, ikkala qurilmada internet borligini tekshiring")
+        info = sync.hello(hub, 15 if code else 3)
         if not info or info.get("role") != "hub":
-            raise ApiError(400, f"{url} manzilida EproPos kompyuteri topilmadi")
+            raise ApiError(400, "Kompyuter javob bermadi, birozdan keyin qayta urining" if code
+                           else f"{url} manzilida EproPos kompyuteri topilmadi")
         try:
-            res = sync.post_json(url + "/api/sync/pair", {"pin": pin, "node": conn.sync_node, "name": "Telefon"}, 15)
+            res = sync.post_json(hub + "/api/sync/pair", {"pin": pin, "node": conn.sync_node, "name": "Telefon",
+                                                          "code": code}, 20)
         except sync.SyncError as e:
             raise ApiError(e.status or 502, str(e))
+        net = res.get("internet") or {}
         with db_lock:
             try:
                 fresh = sync.is_fresh(conn)
@@ -3442,8 +3508,10 @@ def sync_connect(conn, user, params, data, query):
                     if res.get("pin_secret"):
                         conn.execute("INSERT INTO settings (key, value) VALUES ('_pin_secret', ?) ON CONFLICT(key) "
                                      "DO UPDATE SET value = excluded.value", (res["pin_secret"],))
-                for k, v in (("hub_url", url), ("token", res["token"]), ("hub_node", res["hub_node"]),
-                             ("hub_shop", res.get("shop")), ("last_pull", 0), ("last_push", 0)):
+                for k, v in (("hub_url", None if code else hub), ("public_url", hub if code else net.get("url")),
+                             ("relay_code", net.get("code") or code), ("token", res["token"]),
+                             ("hub_node", res["hub_node"]), ("hub_shop", res.get("shop")),
+                             ("last_pull", 0), ("last_push", 0)):
                     sync.set_meta(conn, k, v)
                 conn.commit()
             finally:
@@ -3468,9 +3536,23 @@ def sync_now(conn, user, params, data, query):
 
 @route("POST", "/api/sync/disconnect", ("settings",))
 def sync_disconnect(conn, user, params, data, query):
-    for k in ("token", "hub_url", "hub_node", "hub_shop"):
+    for k in ("token", "hub_url", "public_url", "relay_code", "hub_node", "hub_shop"):
         sync.set_meta(conn, k, None)
     return {"ok": True}
+
+
+@route("POST", "/api/sync/internet", ("settings",))
+def sync_internet(conn, user, params, data, query):
+    """Kompyuterda: telefonlar boshqa tarmoqdan (internet orqali) ham ulana olsin."""
+    if ROLE != "hub" or not internet:
+        raise ApiError(400, "Faqat kompyuterda")
+    if data.get("enabled"):
+        internet.enable(conn)
+    else:
+        internet.disable(conn)
+    write_journal(conn, user, "settings", entry(
+        "Internet orqali sinxronlash " + ("yoqildi" if data.get("enabled") else "o'chirildi"), ""), "sync_internet")
+    return internet.status()
 
 
 # --- jurnal sahifasi
@@ -3549,6 +3631,7 @@ LOGIN_GUARD = LoginGuard()
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "EproPos/1.0"
+    relay = False  # True - tunnel (internet) orqali kelgan so'rov
 
     def log_message(self, fmt, *args):
         sys.stderr.write("[%s] %s\n" % (now(), fmt % args))
@@ -3760,12 +3843,105 @@ class Handler(BaseHTTPRequestHandler):
         return 200, user, {"Set-Cookie": cookie}
 
 
+# --- internet orqali sinxronlash (kompyuterda)
+
+RELAY_PATHS = {("GET", "/api/sync/hello"), ("POST", "/api/sync/pair"), ("POST", "/api/sync/exchange")}
+
+
+class RelayHandler(Handler):
+    """Tunnel orqali internetdan keladigan so'rovlar: faqat sinxronlash; kassa, hisobotlar va boshqalar yopiq."""
+    relay = True
+
+    def dispatch(self, method):
+        if not (internet and internet.enabled):
+            return self.send_json(503, {"error": "Kompyuterda internet orqali ulanish o'chirilgan"})
+        if (method, urlparse(self.path).path) not in RELAY_PATHS:
+            return self.send_json(404, {"error": "Topilmadi"})
+        return super().dispatch(method)
+
+
+class InternetAccess:
+    """Kompyuterni internetga chiqaradi (tunnel.py) va tunnel manzilini internet kodi bo'yicha e'lon qiladi."""
+
+    def __init__(self, conn):
+        self.conn = conn
+        self.code = sync.meta(conn, "relay_code")
+        self.relay = None
+        self.tunnel = None
+        self.published = None
+        self.published_at = 0
+        self.publish_error = None
+        self.wake = threading.Event()
+        if sync.meta(conn, "internet") == "1":
+            self.enable(conn)
+
+    @property
+    def enabled(self):
+        return bool(self.tunnel and self.tunnel.enabled)
+
+    def enable(self, conn):
+        if not self.code:
+            self.code = sync.new_code()
+            sync.set_meta(conn, "relay_code", self.code)
+        sync.set_meta(conn, "internet", "1")
+        if not self.relay:
+            self.relay = ThreadingHTTPServer(("127.0.0.1", 0), RelayHandler)  # faqat tunnel ulanadi
+            self.relay.daemon_threads = True
+            self.relay.conn = self.conn
+            threading.Thread(target=self.relay.serve_forever, daemon=True).start()
+            tools = os.environ.get("EPROPOS_TOOLS", os.path.join(BASE_DIR, "tools"))
+            self.tunnel = Tunnel(self.relay.server_address[1], tools, lambda url: self.wake.set())
+            threading.Thread(target=self.publisher, daemon=True).start()
+            atexit.register(self.tunnel.stop)
+        self.tunnel.start()
+
+    def disable(self, conn):
+        sync.set_meta(conn, "internet", "0")
+        if self.tunnel:
+            self.tunnel.stop()
+        self.published = None
+
+    def publisher(self):
+        """Tunnel manzili o'zgarganda (va har 6 soatda) e'lon qilinadi - telefonlar yangi manzilni topadi."""
+        while True:
+            self.wake.wait(30)
+            self.wake.clear()
+            url = self.tunnel.url
+            if not url or not self.tunnel.enabled:
+                continue
+            if url == self.published and time.time() - self.published_at < 6 * 3600:
+                continue
+            try:
+                sync.relay_publish(self.code, url)
+                self.published, self.published_at, self.publish_error = url, time.time(), None
+            except Exception as e:
+                self.publish_error = f"Manzilni e'lon qilib bo'lmadi: {e}"
+
+    def info(self):
+        """Telefonlarga: internet kodi va hozirgi manzil (o'chirilgan bo'lsa None)."""
+        return {"code": self.code, "url": self.tunnel.url} if self.enabled else None
+
+    def status(self):
+        t = self.tunnel
+        online = bool(t and t.url)
+        return {"enabled": self.enabled, "state": t.state if t else "off", "url": t.url if t else None,
+                "code": sync.format_code(self.code), "published": online and self.published == t.url,
+                "error": (t.error if t else None) or (self.publish_error if online else None)}
+
+
+internet = None
+
+
 def make_server(port=PORT, host="0.0.0.0", poll_bots=False):
     conn = connect()
     init_db(conn)
     server = ThreadingHTTPServer((host, port), Handler)
     server.daemon_threads = True
     server.conn = conn
+    if ROLE == "hub":  # kompyuterda: telefonlar internet orqali ham ulana olishi uchun
+        global internet
+        internet = InternetAccess(conn)
+        conn.commit()
     if ROLE == "phone":  # telefonda: kompyuter bilan fonda sinxronlash
         global sync_worker
         sync_worker = SyncWorker(conn)

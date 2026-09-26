@@ -7,11 +7,15 @@ o'zgarishlar almashiladi:
   * Har bir qator o'zgarishi trigger orqali sync_changes jadvaliga yoziladi (seq - tartib raqami, hlc - vaqt+tugun).
   * Ziddiyat: bir qator ikki joyda o'zgargan bo'lsa - eng oxirgi o'zgarish (hlc katta) qoladi.
   * Ombor qoldig'i va qaytarish summalari almashuvdan keyin harakatlardan qayta hisoblanadi - sotuvlar yo'qolmaydi.
+  * Turli tarmoqlarda: kompyuter internetga tunnel orqali chiqadi (tunnel.py), uning o'zgaruvchan manzili
+    "internet kodi" nomli yashirin kanalga e'lon qilinadi (relay_publish), telefon uni o'sha yerdan oladi.
 """
 
 import ipaddress
 import json
+import os
 import random
+import secrets
 import re
 import socket
 import sqlite3
@@ -258,13 +262,21 @@ def is_fresh(conn):
 
 # --- tarmoq: kompyuterni topish va so'rovlar
 
-_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # mahalliy tarmoq - proksisiz
+
+
+_web = urllib.request.build_opener()  # internet (https) - tizim proksisi bilan
+
+
+def _open(req, timeout):
+    url = req.full_url if isinstance(req, urllib.request.Request) else req
+    return (_web if url.startswith("https://") else _opener).open(req, timeout=timeout)
 
 
 def post_json(url, body, timeout=20):
     req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
     try:
-        with _opener.open(req, timeout=timeout) as res:
+        with _open(req, timeout) as res:
             return json.loads(res.read().decode())
     except urllib.error.HTTPError as e:
         try:
@@ -284,7 +296,7 @@ class SyncError(Exception):
 
 def hello(url, timeout=1.0):
     try:
-        with _opener.open(url.rstrip("/") + "/api/sync/hello", timeout=timeout) as res:
+        with _open(url.rstrip("/") + "/api/sync/hello", timeout) as res:
             data = json.loads(res.read().decode())
             return data if data.get("app") == "EproPos" else None
     except (OSError, ValueError, urllib.error.URLError):
@@ -315,3 +327,53 @@ def discover(port, timeout=0.6):
             if info and info.get("role") == "hub":
                 found.append(dict(info, url=url))
     return found
+
+
+# --- internet orqali: kompyuterning tunnel manzilini e'lon qilish va topish (ntfy.sh - bepul, ro'yxatdan o'tishsiz)
+
+RELAY = os.environ.get("EPROPOS_RELAY", "https://ntfy.sh").rstrip("/")
+CODE_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"  # adashtiriladigan belgilarsiz (0/o, 1/l/i)
+
+
+def new_code():
+    """Internet kodi: 10 belgi (~50 bit) - taxmin qilib bo'lmaydi; ko'rinishi: abcde-fghjk"""
+    return "".join(secrets.choice(CODE_ALPHABET) for _ in range(10))
+
+
+def normalize_code(text):
+    code = re.sub(r"[^a-z0-9]", "", str(text or "").lower())
+    return code if len(code) == 10 and all(c in CODE_ALPHABET for c in code) else None
+
+
+def format_code(code):
+    return f"{code[:5]}-{code[5:]}" if code else None
+
+
+def _topic(code):
+    return "epropos-" + code
+
+
+def relay_publish(code, url, timeout=15):
+    req = urllib.request.Request(f"{RELAY}/{_topic(code)}", data=url.encode(), method="POST",
+                                 headers={"Title": "EproPos", "Tags": "epropos"})
+    with _web.open(req, timeout=timeout) as res:
+        res.read()
+
+
+def relay_lookup(code, timeout=15):
+    """Kompyuterning eng oxirgi e'lon qilgan manzili (topilmasa None)."""
+    try:
+        with _web.open(f"{RELAY}/{_topic(code)}/json?poll=1&since=all", timeout=timeout) as res:
+            lines = res.read().decode().splitlines()
+    except (OSError, ValueError, urllib.error.URLError):
+        return None
+    url = None
+    for line in lines:
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            continue
+        text = str(msg.get("message") or "").strip()
+        if msg.get("event") == "message" and re.match(r"^https?://[^\s/]+$", text):
+            url = text
+    return url

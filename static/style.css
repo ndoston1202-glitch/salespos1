@@ -1249,3 +1249,6 @@ a.kpi:hover { border-color: var(--primary); }
 .sync-connect label { display: flex; flex-direction: column; gap: 4px; }
 .sync-hub { display: flex; align-items: center; gap: 8px; width: 100%; margin-top: 8px; text-align: left; }
 .sync-panel .btn.big { width: 100%; justify-content: center; }
+.net-code { align-items: flex-end; text-align: right; }
+.net-code b { font-size: 20px; letter-spacing: 1px; font-family: ui-monospace, Menlo, Consolas, monospace; color: var(--primary); }
+#internet-box { margin-bottom: 18px; }

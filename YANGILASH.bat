@@ -26,7 +26,7 @@ if errorlevel 1 goto failed
 rem Yangi kod kuchga kirishi uchun orqa fondagi serverni qayta ishga tushiramiz
 if not exist "epropos.pid" goto started
 set /p PID=<"epropos.pid"
-taskkill /PID %PID% /F >nul 2>&1
+taskkill /PID %PID% /T /F >nul 2>&1
 del "epropos.pid" >nul 2>&1
 :started
 echo.

@@ -13,7 +13,7 @@ def generated = layout.buildDirectory.dir("epropos").get().asFile
 project.delete(generated)
 project.copy {
     from(repoRoot) {
-        include "server.py", "sync.py", "telegram.py", "xlsx.py"
+        include "server.py", "sync.py", "telegram.py", "tunnel.py", "xlsx.py"
         into "python"
     }
     from(new File(repoRoot, "static")) {

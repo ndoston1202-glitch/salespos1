@@ -82,6 +82,12 @@ Yuklab olish: **[EproPos.apk](https://github.com/ndoston1202-glitch/salespos1/re
 - Telefonda ma'lumot bo'lmasa — hammasi kompyuterdan olinadi (kompyuterdagi parollar bilan kirasiz);
   bo'lsa — ikkala baza birlashtiriladi
 - Kompyuterda: **Sozlamalar → Sinxronlash** — ulangan telefonlar ro'yxati (keraksizini uzish mumkin)
+- **🌐 Boshqa tarmoqda (internet orqali):** kompyuterda **Sozlamalar → Sinxronlash → Internet orqali ulanishni yoqish**.
+  Kompyuter bepul Cloudflare tunneli orqali internetga chiqadi (ro'yxatdan o'tish, domen yoki routerda port ochish
+  shart emas; `cloudflared` dasturi birinchi marta o'zi yuklab olinadi) va **internet kodi** (masalan `c6rbu-q4b3p`) beriladi.
+  Telefonda manzil o'rniga shu kodni va administrator parolini kiriting. Wi-Fi'da ulangan telefonlar ham kompyuterdan
+  uzoqlashganda internet orqali davom etadi. Internetga faqat sinxronlash ochiladi — kassa va hisobotlar internetdan
+  ko'rinmaydi. Kompyuterning o'zgaruvchan tunnel manzili telefonlarga kod bo'yicha [ntfy.sh](https://ntfy.sh) orqali yetkaziladi
 - Chek Android chop etish oynasi orqali chiqariladi (Bluetooth/Wi-Fi printer yoki PDF)
 
 APK `android/` papkasidan GitHub Actions'da yig'iladi (Gradle + Chaquopy).

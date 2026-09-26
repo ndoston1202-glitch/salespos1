@@ -3199,7 +3199,7 @@ function viewSyncHub(st) {
     <div class="panel sync-panel" style="max-width:760px">
       <h2>📱 Telefonlar bilan sinxronlash</h2>
       <p class="muted">Telefondagi EproPos ilovasi kompyutersiz ham to'liq ishlaydi. Telefon shu kompyuter bilan
-        <b>bitta Wi-Fi'ga</b> tushganda sotuvlar, tovarlar, qoldiqlar va boshqa ma'lumotlar o'zi almashadi.</p>
+        <b>bitta Wi-Fi'ga</b> tushganda (yoki "Internet orqali" yoqilsa — istalgan joyda) sotuvlar, tovarlar, qoldiqlar va boshqa ma'lumotlar o'zi almashadi.</p>
       <h3>Telefonni ulash</h3>
       <ol class="help-list">
         <li>Telefonda EproPos ilovasini oching → <b>Sozlamalar → Sinxronlash</b></li>
@@ -3207,6 +3207,8 @@ function viewSyncHub(st) {
           ${st.urls.length ? st.urls.map((u) => `<code>${esc(u)}</code>`).join(" ") : "<i>kompyuter tarmoqqa ulanmagan</i>"})</li>
         <li>Shu yerdagi administrator parolini kiriting</li>
       </ol>
+      <h3>🌐 Internet orqali (boshqa tarmoqda)</h3>
+      <div id="internet-box">${internetBox(st.internet)}</div>
       <h3>Ulangan telefonlar</h3>
       ${st.devices.length ? `<table class="list">
         <thead><tr><th>Qurilma</th><th>Ulangan</th><th>Oxirgi sinxronlash</th><th>IP</th><th></th></tr></thead>
@@ -3216,11 +3218,54 @@ function viewSyncHub(st) {
           <td class="right"><button class="btn small danger" data-rm="${d.id}">Uzish</button></td></tr>`).join("")}</tbody>
       </table>` : `<p class="muted">Hali telefon ulanmagan</p>`}
     </div>`);
+  const bindInternet = () => {
+    const btn = $("#internet-toggle", view);
+    if (btn) btn.addEventListener("click", safe(async () => {
+      const on = btn.dataset.on !== "1";
+      if (!on && !confirm("Internet orqali ulanish o'chirilsinmi? Boshqa tarmoqdagi telefonlar faqat shu Wi-Fi'ga kelganda almashadi.")) return;
+      const net = await api("POST", "/api/sync/internet", { enabled: on });
+      $("#internet-box", view).innerHTML = internetBox(net);
+      bindInternet();
+    }));
+  };
+  bindInternet();
+  // tunnel ishga tushayotgan bo'lsa - holatni yangilab turamiz
+  const poll = setInterval(async () => {
+    const box = $("#internet-box");
+    if (!box || box !== $("#internet-box", view)) return clearInterval(poll);
+    const cur = await api("GET", "/api/sync/status").catch(() => null);
+    if (cur && cur.internet && !box.contains(document.activeElement)) {
+      box.innerHTML = internetBox(cur.internet);
+      bindInternet();
+    }
+  }, 4000);
   $$("[data-rm]", view).forEach((b) => b.addEventListener("click", safe(async () => {
     if (!confirm("Bu telefon uzilsinmi? U endi ma'lumot almasha olmaydi (telefondagi ma'lumotlar qoladi).")) return;
     await api("DELETE", "/api/sync/devices/" + b.dataset.rm);
     router();
   })));
+}
+
+const INTERNET_STATES = { off: "O'chirilgan", downloading: "Tunnel dasturi yuklab olinmoqda (bir marta, ~30 MB)...",
+  starting: "Ulanmoqda...", online: "Internetda ✅", error: "Ulanib bo'lmadi, qayta urinilmoqda..." };
+
+function internetBox(net) {
+  if (!net) return "";
+  if (!net.enabled) {
+    return `<p class="muted">Yoqilsa, telefon kompyuter bilan <b>boshqa tarmoqda</b> bo'lsa ham (masalan, mobil internetda)
+        ikkala qurilmada internet bo'lganda ma'lumotlar almashadi. Kompyuterda EproPos ochiq turishi kerak.</p>
+      <button class="btn primary" id="internet-toggle" data-on="0">🌐 Internet orqali ulanishni yoqish</button>`;
+  }
+  const ready = net.state === "online" && net.published;
+  return `<div class="sync-card">
+      <div><small class="muted">Holati</small><b>${ready ? "Internetda ✅" : esc(INTERNET_STATES[net.state] || net.state)}</b>
+        ${net.error ? `<span class="error">${esc(net.error)}</span>` : ""}</div>
+      <div class="net-code"><small class="muted">Internet kodi</small><b>${esc(net.code || "")}</b></div>
+    </div>
+    <p class="muted">Telefonni boshqa tarmoqdan ulash: telefonda <b>Sozlamalar → Sinxronlash</b> → manzil o'rniga shu
+      <b>internet kodini</b> va administrator parolini kiriting. Wi-Fi'da ulangan telefonlar internetga o'zi o'tadi.
+      Kodni begonalarga bermang. Internet orqali faqat sinxronlash ochiladi — dasturning o'zi internetdan ko'rinmaydi.</p>
+    <button class="btn danger-text" id="internet-toggle" data-on="1">O'chirish</button>`;
 }
 
 function viewSyncPhone(st) {
@@ -3230,7 +3275,8 @@ function viewSyncPhone(st) {
       <h2>🔄 Kompyuter bilan sinxronlash</h2>
       ${st.paired ? `
         <div class="sync-card">
-          <div><small class="muted">Ulangan kompyuter</small><b>${esc(st.hub_shop || "EproPos")}</b><span class="muted">${esc(st.hub_url || "")}</span></div>
+          <div><small class="muted">Ulangan kompyuter</small><b>${esc(st.hub_shop || "EproPos")}</b>
+            <span class="muted">${st.via === "internet" ? "🌐 Internet orqali" : st.via === "lan" ? "📶 Wi-Fi orqali" : esc(st.hub_url || "")}</span></div>
           <span class="badge ${cls}">${label}</span>
         </div>
         <div class="sync-facts">
@@ -3238,7 +3284,8 @@ function viewSyncPhone(st) {
           <div><small class="muted">Yuborilmagan o'zgarishlar</small><b>${st.pending}</b></div>
         </div>
         ${st.last_error && st.state !== "ok" ? `<div class="notice error-notice">${esc(st.last_error)}</div>` : ""}
-        <p class="muted">Telefon kompyuter bilan bitta Wi-Fi'da bo'lganda har 15 soniyada o'zi almashadi.
+        <p class="muted">Har 15 soniyada o'zi almashadi: kompyuter bilan bitta Wi-Fi'da bo'lganda${st.internet
+          ? " yoki boshqa tarmoqda bo'lsa ham internet orqali" : ""}.
           Kompyuter topilmasa ham ilova oddiy ishlayveradi — o'zgarishlar keyin yuboriladi.</p>
         <div class="actions"><button class="btn danger-text" id="unpair">Uzish</button>
           <button class="btn primary" id="now">🔄 Hozir sinxronlash</button></div>` : `
@@ -3249,7 +3296,10 @@ function viewSyncPhone(st) {
         <button class="btn big" id="scan">${icon("search")} Kompyuterni qidirish</button>
         <div id="found"></div>
         <form id="connect" class="sync-connect">
-          <label><span>Kompyuter manzili</span><input name="url" placeholder="192.168.1.10:8100" required autocomplete="off"></label>
+          <label><span>Kompyuter manzili yoki internet kodi</span><input name="url" placeholder="192.168.1.10:8100 yoki abcde-fghjk"
+            required autocomplete="off" autocapitalize="off"></label>
+          <small class="muted">Kompyuter boshqa tarmoqda bo'lsa — kompyuterdagi <b>Sozlamalar → Sinxronlash</b> sahifasidagi
+            internet kodini yozing.</small>
           <label><span>Kompyuterdagi administrator paroli</span><input name="pin" type="password" inputmode="numeric" maxlength="4" required></label>
           <button class="btn primary big">Ulash</button>
         </form>`}
