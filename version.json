@@ -1,10 +1,10 @@
 {
-  "version": "1.8.2",
+  "version": "1.9.0",
   "date": "2026-09-27",
   "notes": [
+    "Yangi Hisobotlar bo'limi: Savdo, CRM, Ombor, Moliya bo'yicha 20 ta hisobot",
+    "Har bir hisobotda filtrlar: sana, soat oralig'i, xodim, mijoz, kategoriya, to'lov turi; natija kartalari, diagramma, Excel",
     "Obuna Admin alohida dasturga ajratildi; faqat EproPos uchun berilgan kodlar qabul qilinadi",
-    "Admin panel: yangi mijozga demo muddatini o'zingiz belgilaysiz",
-    "Admin panel: mijoz dasturini vaqtincha to'xtatish va davom ettirish",
-    "Obuna: 14 kunlik sinov, muddat tugaganda bloklash, faollashtirish kodi (Sozlamalar → Obuna)"
+    "Admin panel: yangi mijozga demo muddatini o'zingiz belgilaysiz"
   ]
 }

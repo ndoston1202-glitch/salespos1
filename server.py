@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import io
 import json
+import math
 import mimetypes
 import os
 import random
@@ -2214,6 +2215,595 @@ def report(conn, user, params, data, query):
             )
         ),
     }
+
+
+# --- hisobotlar markazi: bo'limlar (Savdo, CRM, Ombor, Moliya) bo'yicha jadval hisobotlar, filtrlar, Excel'ga yuklab olish
+# Har bir hisobot: ustunlar (key, nomi, turi) + qatorlar + jami (+ kartalar, diagramma). Turi: text/int/qty/money/pct/date
+# Filtrlar: sana, soat oralig'i, xodim, mijoz, kategoriya, to'lov turi, vaqt turi (kun/hafta/oy)
+
+REPORTS = {}
+REPORT_SECTIONS = {"sales": "Savdo", "crm": "CRM", "stock": "Ombor", "finance": "Moliya"}
+SALE_FILTERS = ["hours", "cashier", "customer", "method", "category"]
+
+
+def report_def(key, title, sections, period=True, filters=(), description=""):
+    """sections bo'sh bo'lsa - hisobot faqat "Barchasi" bo'limida (masalan xodimlar, ta'minotchilar)."""
+    def wrap(fn):
+        REPORTS[key] = {"key": key, "title": title, "sections": list(sections), "period": period,
+                        "filters": list(filters), "description": description, "fn": fn}
+        return fn
+    return wrap
+
+
+def col(key, label, kind="text"):
+    return {"key": key, "label": label, "type": kind}
+
+
+def card(label, value, kind="money"):
+    return {"label": label, "value": value, "type": kind}
+
+
+NET_QTY = "(i.qty - i.returned_qty)"
+
+
+def sales_where(f, items=False):
+    """Savdo filtri: "o" - orders, items=True bo'lsa "i" (order_items) va "p" (products) ham bor."""
+    sql = "o.status = 'paid' AND o.closed_at BETWEEN ? AND ?"
+    args = list(f["rng"])
+    if f.get("hour_from") is not None:
+        sql += " AND CAST(strftime('%H', o.closed_at) AS INTEGER) BETWEEN ? AND ?"
+        args += [f["hour_from"], f["hour_to"]]
+    for key, column in (("cashier", "o.cashier_id"), ("customer", "o.customer_id"), ("method", "o.payment_method")):
+        if f.get(key):
+            sql += f" AND {column} = ?"
+            args.append(f[key])
+    if f.get("category"):
+        if items:
+            sql += " AND p.category_id = ?" if f["category"] != "none" else " AND p.category_id IS NULL"
+        else:
+            sql += (" AND EXISTS (SELECT 1 FROM order_items i2 JOIN products p2 ON p2.id = i2.product_id "
+                    "WHERE i2.order_id = o.id AND p2.category_id " + ("= ?)" if f["category"] != "none" else "IS NULL)"))
+        if f["category"] != "none":
+            args.append(f["category"])
+    return sql, args
+
+
+def sales_cards(conn, f):
+    where, args = sales_where(f)
+    s = conn.execute(f"""SELECT COUNT(*), COALESCE(SUM(subtotal), 0), COALESCE(SUM(discount), 0), COALESCE(SUM(returned), 0),
+                                COALESCE(SUM(total - returned), 0) FROM orders o WHERE {where}""", args).fetchone()
+    iw, iargs = sales_where(f, items=True)
+    cost = conn.execute(f"""SELECT COALESCE(SUM(i.cost * {NET_QTY}), 0) FROM order_items i JOIN orders o ON o.id = i.order_id
+                            LEFT JOIN products p ON p.id = i.product_id WHERE {iw}""", iargs).fetchone()[0]
+    return [card("Cheklar", s[0], "int"), card("Sotilgan", s[1]), card("Qaytarilgan", s[3]), card("Chegirma", s[2]),
+            card("Daromad (sof)", s[4]), card("Yalpi foyda", s[4] - int(round(cost)))]
+
+
+def totals(rows_, keys):
+    return {k: round(sum(r.get(k) or 0 for r in rows_), 3) for k in keys}
+
+
+def with_share(rows_, key, total):
+    for r in rows_:
+        r["share"] = round(r[key] * 100 / total, 1) if total else 0
+    return rows_
+
+
+def abc_classes(rows_, key):
+    """ABC: daromadning 80% ini beradiganlar - A, keyingi 15% - B, qolganlari - C."""
+    total = sum(r[key] for r in rows_) or 1
+    acc = 0
+    for r in rows_:
+        r["share"] = round(r[key] * 100 / total, 1)
+        r["abc"] = "A" if acc < total * 0.8 else "B" if acc < total * 0.95 else "C"
+        acc += r[key]
+        r["cum"] = round(acc * 100 / total, 1)
+    return rows_
+
+
+def result(columns, data, total=None, cards=None, chart=None):
+    return {"columns": columns, "rows": data, "totals": total or {}, "cards": cards or [], "chart": chart}
+
+
+@report_def("sales_daily", "Umumiy savdo", ["sales"], filters=SALE_FILTERS + ["group"],
+            description="Kun / hafta / oy bo'yicha: cheklar, tushum, chegirma, qaytarish, tannarx, foyda")
+def rep_sales_daily(conn, f):
+    where, args = sales_where(f)
+    bucket = {"week": "strftime('%Y', o.closed_at) || '-' || strftime('%W', o.closed_at) || '-hafta'",
+              "month": "strftime('%Y-%m', o.closed_at)"}.get(f.get("group"), "date(o.closed_at)")
+    data = rows(conn.execute(
+        f"""SELECT {bucket} AS day, COUNT(*) AS orders, SUM(o.subtotal) AS gross, SUM(o.discount) AS discount,
+                   SUM(o.returned) AS returned, SUM(o.total - o.returned) AS revenue,
+                   ROUND(SUM((SELECT COALESCE(SUM(i.cost * {NET_QTY}), 0) FROM order_items i WHERE i.order_id = o.id))) AS cost
+            FROM orders o WHERE {where} GROUP BY day ORDER BY day""", args))
+    for r in data:
+        r["cost"] = int(r["cost"] or 0)
+        r["profit"] = r["revenue"] - r["cost"]
+        r["average"] = r["revenue"] // r["orders"] if r["orders"] else 0
+    return result([col("day", "Sana"), col("orders", "Cheklar", "int"), col("gross", "Sotilgan", "money"),
+                   col("discount", "Chegirma", "money"), col("returned", "Qaytarilgan", "money"),
+                   col("revenue", "Daromad (sof)", "money"), col("average", "O'rtacha chek", "money"),
+                   col("cost", "Tannarx", "money"), col("profit", "Foyda", "money")],
+                  data, totals(data, ["orders", "gross", "discount", "returned", "revenue", "cost", "profit"]),
+                  sales_cards(conn, f), {"label": "day", "value": "revenue"})
+
+
+def _product_sales(conn, f, group, name_sql):
+    where, args = sales_where(f, items=True)
+    data = rows(conn.execute(
+        f"""SELECT {name_sql}, COUNT(DISTINCT o.id) AS orders, ROUND(SUM({NET_QTY}), 3) AS qty,
+                   ROUND(SUM({NET_QTY} * i.price)) AS revenue, ROUND(SUM({NET_QTY} * i.cost)) AS cost
+            FROM order_items i JOIN orders o ON o.id = i.order_id
+            LEFT JOIN products p ON p.id = i.product_id LEFT JOIN categories c ON c.id = p.category_id
+            WHERE {where} AND i.qty > i.returned_qty GROUP BY {group} ORDER BY revenue DESC""", args))
+    for r in data:
+        r["revenue"], r["cost"] = int(r["revenue"]), int(r["cost"])
+        r["profit"] = r["revenue"] - r["cost"]
+    return with_share(data, "revenue", sum(r["revenue"] for r in data))
+
+
+@report_def("sales_products", "Mahsulotlar bo'yicha savdo", ["sales"], filters=SALE_FILTERS,
+            description="Har bir tovar: sotilgan miqdor, summa, tannarx, foyda")
+def rep_sales_products(conn, f):
+    data = _product_sales(conn, f, "COALESCE(i.product_id, i.name)",
+                          "i.name, COALESCE(c.name, '-') AS category, i.unit")
+    return result([col("name", "Mahsulot"), col("category", "Kategoriya"), col("qty", "Miqdor", "qty"), col("unit", "Birlik"),
+                   col("orders", "Cheklar", "int"), col("revenue", "Summa", "money"), col("cost", "Tannarx", "money"),
+                   col("profit", "Foyda", "money"), col("share", "Ulushi, %", "pct")],
+                  data, totals(data, ["revenue", "cost", "profit"]), sales_cards(conn, f), {"label": "name", "value": "revenue"})
+
+
+@report_def("sales_categories", "Kategoriya bo'yicha savdo", ["sales"], filters=SALE_FILTERS)
+def rep_sales_categories(conn, f):
+    data = _product_sales(conn, f, "c.id", "COALESCE(c.name, 'Kategoriyasiz') AS category")
+    return result([col("category", "Kategoriya"), col("orders", "Cheklar", "int"), col("revenue", "Summa", "money"),
+                   col("cost", "Tannarx", "money"), col("profit", "Foyda", "money"), col("share", "Ulushi, %", "pct")],
+                  data, totals(data, ["revenue", "cost", "profit"]), sales_cards(conn, f), {"label": "category", "value": "revenue"})
+
+
+@report_def("sales_methods", "To'lov turi bo'yicha savdo", ["sales", "finance"], filters=SALE_FILTERS)
+def rep_sales_methods(conn, f):
+    names = dict(ACCOUNT_NAMES, debt="Nasiya")
+    where, args = sales_where(f)
+    data = rows(conn.execute(
+        f"""SELECT o.payment_method AS method, COUNT(*) AS orders, SUM(o.total - o.returned) AS revenue
+            FROM orders o WHERE {where} GROUP BY o.payment_method ORDER BY revenue DESC""", args))
+    for r in data:
+        r["method"] = names.get(r["method"], r["method"] or "-")
+    with_share(data, "revenue", sum(r["revenue"] for r in data))
+    return result([col("method", "To'lov turi"), col("orders", "Cheklar", "int"), col("revenue", "Summa", "money"),
+                   col("share", "Ulushi, %", "pct")], data, totals(data, ["orders", "revenue"]),
+                  sales_cards(conn, f), {"label": "method", "value": "revenue"})
+
+
+@report_def("sales_hours", "Soatlar bo'yicha savdo", ["sales"], filters=SALE_FILTERS, description="Qaysi soatlarda ko'p sotiladi")
+def rep_sales_hours(conn, f):
+    where, args = sales_where(f)
+    data = rows(conn.execute(
+        f"""SELECT printf('%02d:00', CAST(strftime('%H', o.closed_at) AS INTEGER)) AS hour, COUNT(*) AS orders,
+                   SUM(o.total - o.returned) AS revenue
+            FROM orders o WHERE {where} GROUP BY hour ORDER BY hour""", args))
+    for r in data:
+        r["average"] = r["revenue"] // r["orders"] if r["orders"] else 0
+    with_share(data, "revenue", sum(r["revenue"] for r in data))
+    return result([col("hour", "Soat"), col("orders", "Cheklar", "int"), col("revenue", "Summa", "money"),
+                   col("average", "O'rtacha chek", "money"), col("share", "Ulushi, %", "pct")],
+                  data, totals(data, ["orders", "revenue"]), None, {"label": "hour", "value": "revenue"})
+
+
+@report_def("sales_returns", "Qaytarish va bekor qilingan cheklar", ["sales"], filters=["cashier"])
+def rep_sales_returns(conn, f):
+    extra_r = " AND r.created_by = ?" if f.get("cashier") else ""
+    extra_o = " AND o.refunded_by = ?" if f.get("cashier") else ""
+    args = list(f["rng"]) + ([f["cashier"]] if f.get("cashier") else [])
+    data = rows(conn.execute(
+        f"""SELECT r.created_at AS date, r.order_id, 'Qaytarish' AS kind, r.amount, COALESCE(r.reason, '') AS reason,
+                   COALESCE(u.full_name, '-') AS user
+            FROM order_returns r LEFT JOIN users u ON u.id = r.created_by WHERE r.created_at BETWEEN ? AND ?{extra_r}
+            UNION ALL
+            SELECT o.refunded_at, o.id, 'Bekor qilingan', o.total - o.returned, COALESCE(o.refund_reason, ''),
+                   COALESCE(u.full_name, '-')
+            FROM orders o LEFT JOIN users u ON u.id = o.refunded_by
+            WHERE o.status = 'refunded' AND o.refunded_at BETWEEN ? AND ?{extra_o}
+            ORDER BY 1 DESC""", args + args))
+    return result([col("date", "Vaqt", "date"), col("order_id", "Chek №", "int"), col("kind", "Turi"), col("amount", "Summa", "money"),
+                   col("reason", "Sabab"), col("user", "Xodim")], data, totals(data, ["amount"]),
+                  [card("Qaytarishlar", sum(1 for r in data if r["kind"] == "Qaytarish"), "int"),
+                   card("Bekor qilingan", sum(1 for r in data if r["kind"] != "Qaytarish"), "int"),
+                   card("Jami summa", sum(r["amount"] for r in data))])
+
+
+@report_def("unsold", "Sotilmayotgan mahsulotlar", ["sales", "stock"], filters=["category"],
+            description="Omborda bor, lekin tanlangan davrda sotilmagan tovarlar")
+def rep_unsold(conn, f):
+    cat = ""
+    args = list(f["rng"])
+    if f.get("category"):
+        cat = " AND p.category_id = ?" if f["category"] != "none" else " AND p.category_id IS NULL"
+        if f["category"] != "none":
+            args.append(f["category"])
+    data = rows(conn.execute(
+        f"""SELECT p.name, COALESCE(c.name, '-') AS category, p.stock, p.unit, ROUND(p.stock * p.cost) AS value,
+                   (SELECT MAX(o.closed_at) FROM order_items i JOIN orders o ON o.id = i.order_id
+                    WHERE i.product_id = p.id AND o.status = 'paid') AS last_sale
+            FROM products p LEFT JOIN categories c ON c.id = p.category_id
+            WHERE p.active = 1 AND p.stock > 0 AND NOT EXISTS (
+                SELECT 1 FROM order_items i JOIN orders o ON o.id = i.order_id
+                WHERE i.product_id = p.id AND o.status = 'paid' AND o.closed_at BETWEEN ? AND ?){cat}
+            ORDER BY value DESC""", args))
+    for r in data:
+        r["value"] = int(r["value"])
+        r["last_sale"] = r["last_sale"] or "hech qachon"
+    return result([col("name", "Mahsulot"), col("category", "Kategoriya"), col("stock", "Qoldiq", "qty"), col("unit", "Birlik"),
+                   col("value", "Qiymati (tannarx)", "money"), col("last_sale", "Oxirgi sotuv", "date")], data, totals(data, ["value"]),
+                  [card("Tovarlar", len(data), "int"), card("Muzlagan pul (tannarxda)", sum(r["value"] for r in data))])
+
+
+@report_def("customers_sales", "Mijoz bo'yicha savdo", ["crm", "sales"], filters=SALE_FILTERS)
+def rep_customers_sales(conn, f):
+    where, args = sales_where(f)
+    data = rows(conn.execute(
+        f"""SELECT c.name, c.phone, COUNT(*) AS orders, SUM(o.total - o.returned) AS revenue, MAX(o.closed_at) AS last
+            FROM orders o JOIN customers c ON c.id = o.customer_id WHERE {where}
+            GROUP BY c.id ORDER BY revenue DESC""", args))
+    for r in data:
+        r["average"] = r["revenue"] // r["orders"] if r["orders"] else 0
+    return result([col("name", "Mijoz"), col("phone", "Telefon"), col("orders", "Cheklar", "int"), col("revenue", "Summa", "money"),
+                   col("average", "O'rtacha chek", "money"), col("last", "Oxirgi xarid", "date")], data, totals(data, ["orders", "revenue"]),
+                  [card("Mijozlar", len(data), "int"), card("Cheklar", sum(r["orders"] for r in data), "int"),
+                   card("Summa", sum(r["revenue"] for r in data))], {"label": "name", "value": "revenue"})
+
+
+@report_def("customers_debt", "Mijozlar balansi (nasiya)", ["crm", "finance"], period=False, filters=["customer"],
+            description="Hozirgi holat: har bir mijozning nasiya qarzi")
+def rep_customers_debt(conn, f):
+    agg = {}
+    for d in debts_query(conn, "AND d.customer_id = ?" if f.get("customer") else "", (f["customer"],) if f.get("customer") else ()):
+        a = agg.setdefault(d["customer_id"], {"name": d["customer_name"], "phone": d["customer_phone"], "amount": 0,
+                                               "paid": 0, "remaining": 0, "overdue": 0, "due": None})
+        a["amount"] += d["amount"]
+        a["paid"] += d["paid"]
+        a["remaining"] += max(d["remaining"], 0)
+        if d["remaining"] > 0:
+            if d["bucket"] == "overdue":
+                a["overdue"] += d["remaining"]
+            a["due"] = min(a["due"] or d["due_date"], d["due_date"])
+    data = sorted((a for a in agg.values() if a["remaining"] > 0), key=lambda a: -a["remaining"])
+    return result([col("name", "Mijoz"), col("phone", "Telefon"), col("amount", "Jami nasiya", "money"), col("paid", "To'langan", "money"),
+                   col("remaining", "Qarz", "money"), col("overdue", "Muddati o'tgan", "money"), col("due", "Eng yaqin muddat", "date")],
+                  data, totals(data, ["amount", "paid", "remaining", "overdue"]),
+                  [card("Qarzdorlar", len(data), "int"), card("Jami qarz", sum(r["remaining"] for r in data)),
+                   card("Muddati o'tgan", sum(r["overdue"] for r in data))])
+
+
+@report_def("customers_abc", "Mijozlar ABC tahlili", ["crm"], filters=SALE_FILTERS,
+            description="A - daromadning 80% ini beruvchi asosiy mijozlar")
+def rep_customers_abc(conn, f):
+    where, args = sales_where(f)
+    data = rows(conn.execute(
+        f"""SELECT c.name, c.phone, COUNT(*) AS orders, SUM(o.total - o.returned) AS revenue
+            FROM orders o JOIN customers c ON c.id = o.customer_id WHERE {where} GROUP BY c.id ORDER BY revenue DESC""", args))
+    abc_classes(data, "revenue")
+    return result([col("abc", "Guruh"), col("name", "Mijoz"), col("phone", "Telefon"), col("orders", "Cheklar", "int"),
+                   col("revenue", "Summa", "money"), col("share", "Ulushi, %", "pct"), col("cum", "Yig'indi, %", "pct")],
+                  data, totals(data, ["orders", "revenue"]),
+                  [card(f"{g} guruh", sum(1 for r in data if r["abc"] == g), "int") for g in "ABC"])
+
+
+def _category_filter(f, alias="p"):
+    if not f.get("category"):
+        return "", []
+    if f["category"] == "none":
+        return f" AND {alias}.category_id IS NULL", []
+    return f" AND {alias}.category_id = ?", [f["category"]]
+
+
+@report_def("stock_balance", "Mahsulotlar qoldig'i", ["stock"], period=False, filters=["category"],
+            description="Hozirgi qoldiq va uning qiymati")
+def rep_stock_balance(conn, f):
+    cat, args = _category_filter(f)
+    data = rows(conn.execute(
+        f"""SELECT p.name, COALESCE(c.name, '-') AS category, p.barcode, p.stock, p.unit, p.cost, p.price,
+                   ROUND(MAX(p.stock, 0) * p.cost) AS cost_value, ROUND(MAX(p.stock, 0) * p.price) AS price_value,
+                   CASE WHEN p.stock <= 0 THEN 'Tugagan' WHEN p.stock <= p.min_stock THEN 'Kam qolgan' ELSE '' END AS state
+            FROM products p LEFT JOIN categories c ON c.id = p.category_id WHERE p.active = 1{cat}
+            ORDER BY c.name, p.name""", args))
+    for r in data:
+        r["cost_value"], r["price_value"] = int(r["cost_value"]), int(r["price_value"])
+    return result([col("name", "Mahsulot"), col("category", "Kategoriya"), col("barcode", "Shtrix-kod"), col("stock", "Qoldiq", "qty"),
+                   col("unit", "Birlik"), col("cost", "Tannarx", "money"), col("price", "Narx", "money"),
+                   col("cost_value", "Qiymati (tannarx)", "money"), col("price_value", "Qiymati (narx)", "money"), col("state", "Holati")],
+                  data, totals(data, ["cost_value", "price_value"]),
+                  [card("Tovarlar", len(data), "int"), card("Tannarxda", sum(r["cost_value"] for r in data)),
+                   card("Sotish narxida", sum(r["price_value"] for r in data)),
+                   card("Kam qolgan", sum(1 for r in data if r["state"] == "Kam qolgan"), "int"),
+                   card("Tugagan", sum(1 for r in data if r["state"] == "Tugagan"), "int")])
+
+
+@report_def("stock_flow", "Tovarlar kirim-chiqimi", ["stock"], filters=["category"],
+            description="Davr boshidagi qoldiq, kirim, chiqim, davr oxiridagi qoldiq")
+def rep_stock_flow(conn, f):
+    cat, cargs = _category_filter(f)
+    rng = f["rng"]
+    data = rows(conn.execute(
+        f"""SELECT p.name, p.unit,
+                   ROUND(COALESCE(SUM(CASE WHEN m.created_at < ? THEN m.qty END), 0), 3) AS opening,
+                   ROUND(COALESCE(SUM(CASE WHEN m.created_at BETWEEN ? AND ? AND m.qty > 0 THEN m.qty END), 0), 3) AS qty_in,
+                   ROUND(COALESCE(SUM(CASE WHEN m.created_at BETWEEN ? AND ? AND m.qty < 0 THEN -m.qty END), 0), 3) AS qty_out,
+                   ROUND(COALESCE(SUM(CASE WHEN m.created_at <= ? THEN m.qty END), 0), 3) AS closing
+            FROM products p JOIN stock_moves m ON m.product_id = p.id WHERE 1 = 1{cat}
+            GROUP BY p.id HAVING opening != 0 OR qty_in != 0 OR qty_out != 0 OR closing != 0 ORDER BY p.name""",
+        [rng[0], rng[0], rng[1], rng[0], rng[1], rng[1]] + cargs))
+    return result([col("name", "Mahsulot"), col("unit", "Birlik"), col("opening", "Boshida", "qty"), col("qty_in", "Kirim", "qty"),
+                   col("qty_out", "Chiqim", "qty"), col("closing", "Oxirida", "qty")], data)
+
+
+@report_def("purchases_items", "Mahsulotlar kirimi", ["stock"], filters=["supplier", "category"],
+            description="Ta'minotchilardan kelgan tovarlar")
+def rep_purchases_items(conn, f):
+    cat, cargs = _category_filter(f, "pr")
+    sup = " AND p.supplier_id = ?" if f.get("supplier") else ""
+    data = rows(conn.execute(
+        f"""SELECT p.created_at AS date, p.id AS doc, COALESCE(s.name, '-') AS supplier, i.name, ROUND(i.qty, 3) AS qty,
+                   i.cost, ROUND(i.qty * i.cost) AS total
+            FROM purchase_items i JOIN purchases p ON p.id = i.purchase_id LEFT JOIN suppliers s ON s.id = p.supplier_id
+            LEFT JOIN products pr ON pr.id = i.product_id
+            WHERE p.status = 'done' AND p.created_at BETWEEN ? AND ?{sup}{cat} ORDER BY p.created_at DESC, i.id""",
+        list(f["rng"]) + ([f["supplier"]] if f.get("supplier") else []) + cargs))
+    for r in data:
+        r["total"] = int(r["total"])
+    return result([col("date", "Vaqt", "date"), col("doc", "Kirim №", "int"), col("supplier", "Ta'minotchi"), col("name", "Mahsulot"),
+                   col("qty", "Miqdor", "qty"), col("cost", "Tannarx", "money"), col("total", "Summa", "money")],
+                  data, totals(data, ["total"]),
+                  [card("Kirimlar", len({r["doc"] for r in data}), "int"), card("Summa", sum(r["total"] for r in data))])
+
+
+@report_def("writeoffs", "Hisobdan chiqarish hisoboti", ["stock"], filters=["cashier", "category"])
+def rep_writeoffs(conn, f):
+    cat, cargs = _category_filter(f)
+    who = " AND m.created_by = ?" if f.get("cashier") else ""
+    data = rows(conn.execute(
+        f"""SELECT m.created_at AS date, p.name, ROUND(-m.qty, 3) AS qty, p.unit, ROUND(-m.qty * p.cost) AS value,
+                   COALESCE(m.comment, '') AS comment, COALESCE(u.full_name, '-') AS user
+            FROM stock_moves m JOIN products p ON p.id = m.product_id LEFT JOIN users u ON u.id = m.created_by
+            WHERE m.kind = 'writeoff' AND m.created_at BETWEEN ? AND ?{who}{cat} ORDER BY m.created_at DESC""",
+        list(f["rng"]) + ([f["cashier"]] if f.get("cashier") else []) + cargs))
+    for r in data:
+        r["value"] = int(r["value"])
+    return result([col("date", "Vaqt", "date"), col("name", "Mahsulot"), col("qty", "Miqdor", "qty"), col("unit", "Birlik"),
+                   col("value", "Qiymati (tannarx)", "money"), col("comment", "Sabab"), col("user", "Xodim")],
+                  data, totals(data, ["value"]), [card("Yozuvlar", len(data), "int"), card("Zarar (tannarxda)", sum(r["value"] for r in data))])
+
+
+@report_def("reorder", "Tavsiya etilgan tovar miqdori", ["stock"], period=False, filters=["category"],
+            description="Oxirgi 30 kundagi sotuvga qarab 14 kunga yetadigan buyurtma miqdori")
+def rep_reorder(conn, f):
+    since = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+    cat, cargs = _category_filter(f)
+    data = []
+    for r in rows(conn.execute(
+        f"""SELECT p.name, p.unit, p.stock, p.min_stock, p.cost,
+                   COALESCE((SELECT SUM({NET_QTY}) FROM order_items i JOIN orders o ON o.id = i.order_id
+                             WHERE i.product_id = p.id AND o.status = 'paid' AND o.closed_at >= ?), 0) AS sold30
+            FROM products p WHERE p.active = 1{cat}""", [since] + cargs)):
+        daily = r["sold30"] / 30
+        need = max(daily * 14, r["min_stock"]) - r["stock"]
+        if need <= 0:
+            continue
+        need = round(need, 2) if r["unit"] in FRACTION_UNITS else math.ceil(need)
+        data.append({"name": r["name"], "unit": r["unit"], "stock": r["stock"], "min_stock": r["min_stock"],
+                     "daily": round(daily, 2), "need": need, "sum": int(round(need * r["cost"]))})
+    data.sort(key=lambda r: -r["sum"])
+    return result([col("name", "Mahsulot"), col("unit", "Birlik"), col("stock", "Qoldiq", "qty"), col("min_stock", "Minimal", "qty"),
+                   col("daily", "Kuniga sotuv", "qty"), col("need", "Buyurtma", "qty"), col("sum", "Taxminiy summa", "money")],
+                  data, totals(data, ["sum"]), [card("Tovarlar", len(data), "int"), card("Taxminiy summa", sum(r["sum"] for r in data))])
+
+
+@report_def("finance_types", "Kirim-chiqim hisoboti", ["finance"], filters=["account"],
+            description="Moliya: kirim va chiqim turlari bo'yicha")
+def rep_finance_types(conn, f):
+    acc = " AND e.account = ?" if f.get("account") else ""
+    data = rows(conn.execute(
+        f"""SELECT t.name, CASE e.direction WHEN 'in' THEN 'Kirim' ELSE 'Chiqim' END AS direction, COUNT(*) AS count,
+                   SUM(CASE WHEN e.direction = 'in' THEN e.amount ELSE 0 END) AS amount_in,
+                   SUM(CASE WHEN e.direction = 'out' THEN e.amount ELSE 0 END) AS amount_out
+            FROM finance_entries e JOIN finance_types t ON t.id = e.type_id
+            WHERE e.status = 'done' AND e.created_at BETWEEN ? AND ?{acc} GROUP BY t.id, e.direction
+            ORDER BY e.direction, amount_in + amount_out DESC""", list(f["rng"]) + ([f["account"]] if f.get("account") else [])))
+    t = totals(data, ["count", "amount_in", "amount_out"])
+    return result([col("name", "Turi"), col("direction", "Yo'nalish"), col("count", "Soni", "int"), col("amount_in", "Kirim", "money"),
+                   col("amount_out", "Chiqim", "money")], data, t,
+                  [card("Kirim", t["amount_in"]), card("Chiqim", t["amount_out"]), card("Farq", t["amount_in"] - t["amount_out"])])
+
+
+@report_def("cash_flow", "Kassa aylanmasi hisoboti", ["finance"], filters=["account"],
+            description="Har bir hisob: boshidagi qoldiq, kirim, chiqim, oxiridagi qoldiq")
+def rep_cash_flow(conn, f):
+    def sums(cond, args):
+        acc = {a: [0, 0] for a in FINANCE_ACCOUNTS}  # [kirim, chiqim]
+        for a, v in conn.execute("SELECT payment_method, SUM(total - returned) FROM orders WHERE status = 'paid' AND "
+                                 + cond.format(t="closed_at") + " GROUP BY payment_method", args):
+            if a in acc:
+                acc[a][0] += v or 0
+        for a, v in conn.execute("SELECT account, SUM(amount) FROM debt_payments WHERE status = 'done' AND "
+                                 + cond.format(t="created_at") + " GROUP BY account", args):
+            if a in acc:
+                acc[a][0] += v or 0
+        for a, d, v in conn.execute("SELECT account, direction, SUM(amount) FROM finance_entries WHERE status = 'done' AND "
+                                    + cond.format(t="created_at") + " GROUP BY account, direction", args):
+            if a in acc:
+                acc[a][0 if d == "in" else 1] += v or 0
+        return acc
+    before = sums("{t} < ?", (f["rng"][0],))
+    during = sums("{t} BETWEEN ? AND ?", f["rng"])
+    data = []
+    for a in FINANCE_ACCOUNTS:
+        if f.get("account") and a != f["account"]:
+            continue
+        opening = before[a][0] - before[a][1]
+        data.append({"account": ACCOUNT_NAMES.get(a, a), "opening": opening, "in": during[a][0], "out": during[a][1],
+                     "closing": opening + during[a][0] - during[a][1]})
+    t = totals(data, ["opening", "in", "out", "closing"])
+    return result([col("account", "Hisob"), col("opening", "Boshida", "money"), col("in", "Kirim", "money"), col("out", "Chiqim", "money"),
+                   col("closing", "Oxirida", "money")], data, t,
+                  [card("Boshida", t["opening"]), card("Kirim", t["in"]), card("Chiqim", t["out"]), card("Oxirida", t["closing"])])
+
+
+@report_def("profit", "Foyda hisoboti", ["finance"], filters=["hours", "cashier", "category"],
+            description="Tushum - tannarx = yalpi foyda; xarajatlar ayirilgach sof foyda")
+def rep_profit(conn, f):
+    where, args = sales_where(f)
+    revenue = conn.execute(f"SELECT COALESCE(SUM(total - returned), 0) FROM orders o WHERE {where}", args).fetchone()[0]
+    iw, iargs = sales_where(f, items=True)
+    cost = int(round(conn.execute(f"""SELECT COALESCE(SUM(i.cost * {NET_QTY}), 0) FROM order_items i
+                                      JOIN orders o ON o.id = i.order_id LEFT JOIN products p ON p.id = i.product_id
+                                      WHERE {iw}""", iargs).fetchone()[0]))
+    expenses = rows(conn.execute(
+        """SELECT t.name, SUM(e.amount) AS amount FROM finance_entries e JOIN finance_types t ON t.id = e.type_id
+           WHERE e.status = 'done' AND e.direction = 'out' AND e.supplier_id IS NULL AND t.is_adjust = 0
+             AND e.created_at BETWEEN ? AND ? GROUP BY t.id ORDER BY amount DESC""", f["rng"]))
+    spent = sum(e["amount"] for e in expenses)
+    data = [{"item": "Tushum (sof savdo)", "amount": revenue}, {"item": "Sotilgan tovar tannarxi", "amount": -cost},
+            {"item": "Yalpi foyda", "amount": revenue - cost}]
+    data += [{"item": "Xarajat: " + e["name"], "amount": -e["amount"]} for e in expenses]
+    data.append({"item": "Sof foyda", "amount": revenue - cost - spent})
+    return result([col("item", "Ko'rsatkich"), col("amount", "Summa", "money")], data, None,
+                  [card("Tushum", revenue), card("Yalpi foyda", revenue - cost), card("Xarajatlar", spent),
+                   card("Sof foyda", revenue - cost - spent)])
+
+
+@report_def("products_abc", "ABC analiz (mahsulotlar)", ["finance", "sales"], filters=SALE_FILTERS,
+            description="A - daromadning 80% ini beruvchi asosiy tovarlar")
+def rep_products_abc(conn, f):
+    where, args = sales_where(f, items=True)
+    data = rows(conn.execute(
+        f"""SELECT i.name, ROUND(SUM({NET_QTY}), 3) AS qty, ROUND(SUM({NET_QTY} * i.price)) AS revenue,
+                   ROUND(SUM({NET_QTY} * (i.price - i.cost))) AS profit
+            FROM order_items i JOIN orders o ON o.id = i.order_id LEFT JOIN products p ON p.id = i.product_id
+            WHERE {where} AND i.qty > i.returned_qty GROUP BY COALESCE(i.product_id, i.name) ORDER BY revenue DESC""", args))
+    for r in data:
+        r["revenue"], r["profit"] = int(r["revenue"]), int(r["profit"])
+    abc_classes(data, "revenue")
+    return result([col("abc", "Guruh"), col("name", "Mahsulot"), col("qty", "Miqdor", "qty"), col("revenue", "Summa", "money"),
+                   col("profit", "Foyda", "money"), col("share", "Ulushi, %", "pct"), col("cum", "Yig'indi, %", "pct")],
+                  data, totals(data, ["revenue", "profit"]),
+                  [card(f"{g} guruh", sum(1 for r in data if r["abc"] == g), "int") for g in "ABC"])
+
+
+@report_def("staff_sales", "Xodim bo'yicha savdo", [], filters=SALE_FILTERS,
+            description="Kassirlar: cheklar, tushum, qaytarish, o'rtacha chek")
+def rep_staff_sales(conn, f):
+    where, args = sales_where(f)
+    data = rows(conn.execute(
+        f"""SELECT COALESCE(u.full_name, '-') AS name, COUNT(*) AS orders, SUM(o.total - o.returned) AS revenue,
+                   SUM(o.discount) AS discount, SUM(o.returned) AS returned
+            FROM orders o LEFT JOIN users u ON u.id = o.cashier_id WHERE {where}
+            GROUP BY o.cashier_id ORDER BY revenue DESC""", args))
+    for r in data:
+        r["average"] = r["revenue"] // r["orders"] if r["orders"] else 0
+    with_share(data, "revenue", sum(r["revenue"] for r in data))
+    return result([col("name", "Xodim"), col("orders", "Cheklar", "int"), col("revenue", "Tushum", "money"),
+                   col("discount", "Chegirma", "money"), col("returned", "Qaytarilgan", "money"),
+                   col("average", "O'rtacha chek", "money"), col("share", "Ulushi, %", "pct")],
+                  data, totals(data, ["orders", "revenue", "discount", "returned"]), sales_cards(conn, f),
+                  {"label": "name", "value": "revenue"})
+
+
+@report_def("suppliers", "Ta'minotchilar aylanmasi hisoboti", [], filters=["supplier"],
+            description="Ta'minotchi: kirimlar, to'lovlar va hozirgi qarz")
+def rep_suppliers(conn, f):
+    balances = {s["id"]: s["balance"] for s in supplier_balances(conn)}
+    rng = list(f["rng"])
+    sup = " WHERE s.id = ?" if f.get("supplier") else ""
+    data = rows(conn.execute(
+        f"""SELECT s.id, s.name, COALESCE(s.phone, '') AS phone,
+                   COALESCE((SELECT COUNT(*) FROM purchases p WHERE p.supplier_id = s.id AND p.status = 'done'
+                             AND p.created_at BETWEEN ? AND ?), 0) AS purchases,
+                   COALESCE((SELECT SUM(total) FROM purchases p WHERE p.supplier_id = s.id AND p.status = 'done'
+                             AND p.created_at BETWEEN ? AND ?), 0) AS received,
+                   COALESCE((SELECT SUM(amount) FROM finance_entries e WHERE e.supplier_id = s.id AND e.status = 'done'
+                             AND e.direction = 'out' AND e.created_at BETWEEN ? AND ?), 0) AS paid
+            FROM suppliers s{sup} ORDER BY s.name""", rng * 3 + ([f["supplier"]] if f.get("supplier") else [])))
+    for r in data:
+        r["balance"] = balances.get(r.pop("id"), 0)
+    data = [r for r in data if r["purchases"] or r["paid"] or r["balance"]]
+    t = totals(data, ["purchases", "received", "paid", "balance"])
+    return result([col("name", "Ta'minotchi"), col("phone", "Telefon"), col("purchases", "Kirimlar", "int"),
+                   col("received", "Kirim summasi", "money"), col("paid", "To'langan", "money"),
+                   col("balance", "Hozirgi qarzimiz", "money")], data, t,
+                  [card("Kirim summasi", t["received"]), card("To'langan", t["paid"]), card("Qarzimiz", t["balance"])])
+
+
+def report_filters(query):
+    today = datetime.now().strftime("%Y-%m-%d")
+    q = {k: v[0] for k, v in query.items() if v and v[0] != ""}
+    date_from, date_to = q.get("from", today[:8] + "01"), q.get("to", today)
+    for d in (date_from, date_to):
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d):
+            raise ApiError(400, "Sana formati: YYYY-MM-DD")
+    f = {"from": date_from, "to": date_to, "rng": (date_from + " 00:00:00", date_to + " 23:59:59")}
+    if "hour_from" in q or "hour_to" in q:
+        f["hour_from"] = min(max(to_int(q.get("hour_from", 0), "Soat"), 0), 23)
+        f["hour_to"] = min(max(to_int(q.get("hour_to", 23), "Soat"), 0), 23)
+    for key in ("cashier", "customer", "supplier"):
+        if key in q:
+            f[key] = to_int(q[key], key)
+    if "category" in q:
+        f["category"] = "none" if q["category"] == "none" else to_int(q["category"], "category")
+    if q.get("method") in PAYMENT_METHODS:
+        f["method"] = q["method"]
+    if q.get("account") in FINANCE_ACCOUNTS:
+        f["account"] = q["account"]
+    if q.get("group") in ("day", "week", "month"):
+        f["group"] = q["group"]
+    return f
+
+
+def run_report(conn, key, query):
+    spec = REPORTS.get(key)
+    if not spec:
+        raise ApiError(404, "Hisobot topilmadi")
+    f = report_filters(query)
+    res = spec["fn"](conn, f)
+    res.update(key=key, title=spec["title"], period=spec["period"], filters=spec["filters"],
+               description=spec["description"], **{"from": f["from"], "to": f["to"]})
+    return res
+
+
+@route("GET", "/api/reports/list", ("reports",))
+def reports_list(conn, user, params, data, query):
+    return {
+        "sections": REPORT_SECTIONS,
+        "reports": [{k: v for k, v in r.items() if k != "fn"} for r in REPORTS.values()],
+        "options": {  # filtrlar uchun ro'yxatlar
+            "cashiers": rows(conn.execute("SELECT id, full_name AS name FROM users ORDER BY active DESC, full_name")),
+            "customers": rows(conn.execute("SELECT id, name, phone FROM customers ORDER BY name LIMIT 5000")),
+            "categories": rows(conn.execute("SELECT id, name FROM categories ORDER BY sort, name")),
+            "suppliers": rows(conn.execute("SELECT id, name FROM suppliers ORDER BY name")),
+            "methods": [{"id": m, "name": dict(ACCOUNT_NAMES, debt="Nasiya").get(m, m)} for m in PAYMENT_METHODS],
+            "accounts": [{"id": a, "name": ACCOUNT_NAMES.get(a, a)} for a in FINANCE_ACCOUNTS],
+        },
+    }
+
+
+@route("GET", r"/api/reports/run/(\w+)", ("reports",))
+def reports_run(conn, user, params, data, query):
+    return run_report(conn, params[0], query)
+
+
+@route("GET", r"/api/reports/xlsx/(\w+)", ("reports",))
+def reports_xlsx(conn, user, params, data, query):
+    res = run_report(conn, params[0], query)
+    cols = res["columns"]
+    body = [["" if r.get(c["key"]) is None else r.get(c["key"]) for c in cols] for r in res["rows"]]
+    if res["totals"]:
+        body.append(["Jami"] + [res["totals"].get(c["key"], "") for c in cols[1:]])
+    period = f"{res['from']} - {res['to']}" if res["period"] else f"{now()[:10]} holatiga"
+    widths = [min(max(len(str(c["label"])), *(len(str(r[i])) for r in body[:500]), 8) + 2, 45) for i, c in enumerate(cols)]
+    content = xlsx.write_xlsx([c["label"] for c in cols], body, widths=widths, sheet="Hisobot",
+                              notes=[f"{res['title']} ({period})", get_settings(conn)["shop_name"]])
+    return FileResponse(content, f"hisobot-{params[0]}-{res['to']}.xlsx",
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 # --- xodimlar

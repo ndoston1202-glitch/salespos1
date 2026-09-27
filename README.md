@@ -58,7 +58,10 @@ Administratorning standart paroli: **1234** (Xodimlar bo'limida o'zgartiring).
 ### Boshqalar
 - 👥 **CRM** — mijozlar, nasiyalar (muddati o'tgan / keldi / bor), to'lovlar
 - 💵 **Moliya** — kassa balansi (naqd, karta, Payme, Click, hisob raqam), kirim-chiqim, ta'minotchilar balansi
-- 📊 **Hisobotlar** — tushum, tannarx, **foyda**, ko'p sotilgan tovarlar, kassirlar
+- 📊 **Hisobotlar** — bo'limlar: Savdo, CRM, Ombor, Moliya (20 ta hisobot: umumiy savdo, mahsulot/kategoriya/to'lov turi/soat
+  bo'yicha, sotilmayotgan tovarlar, mijozlar, nasiya balansi, ABC tahlil, qoldiq, kirim-chiqim, hisobdan chiqarish,
+  tavsiya etilgan buyurtma, kassa aylanmasi, foyda, xodimlar va ta'minotchilar). Filtrlar: sana, soat oralig'i, xodim,
+  mijoz, kategoriya, to'lov turi; natija kartalari, diagramma, saralash, Excel
 - 👤 **Xodimlar** — telefon, ism, 4 raqamli parol va bo'limlarga ruxsatlar
 - 📓 **Jurnal** — barcha amallar: kim, qachon, nima qildi
 - 🔌 **Integratsiyalar** — Telegram bot (xodimlar uchun jurnal xabarlari) va Mijozlar boti

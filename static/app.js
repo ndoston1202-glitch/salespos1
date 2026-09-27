@@ -557,7 +557,7 @@ const NAV = [
     { perm: "crm", href: "#/crm/debts", icon: "debt", name: "Nasiyalar" },
   ] },
   { id: "reports", icon: "reports", name: "Hisobotlar", children: [
-    { perm: "reports", href: "#/reports", icon: "reports", name: "Hisobot" },
+    { perm: "reports", href: "#/reports", icon: "reports", name: "Hisobotlar" },
     { perm: "reports", href: "#/reports/sales", icon: "sales", name: "Savdolar" },
   ] },
   { id: "finance", icon: "finance", name: "Moliya", children: [
@@ -2091,54 +2091,179 @@ async function viewFinanceTypes() {
 
 // ------------------------------------------------------------ hisobot
 
+// ------------------------------------------------------------ hisobotlar markazi
+
+const REPORT_TABS = [["", "Barchasi"], ["sales", "Savdo"], ["crm", "CRM"], ["stock", "Ombor"], ["finance", "Moliya"]];
+
+async function reportsMeta() {
+  if (!state.reportsMeta) state.reportsMeta = await api("GET", "/api/reports/list");
+  return state.reportsMeta;
+}
+
 async function viewReports() {
+  const meta = await reportsMeta();
   const params = new URLSearchParams(location.hash.split("?")[1] || "");
-  const from = params.get("from") || today();
-  const to = params.get("to") || from;
-  const r = await api("GET", `/api/reports?from=${from}&to=${to}`);
+  const section = params.get("s") || "";
+  let mode = "table";
+  try { mode = localStorage.getItem("reports-mode") || "table"; } catch { /* ruxsat yo'q */ }
+  const list = meta.reports.filter((r) => !section || r.sections.includes(section));
+  const view = layout(`
+    <div class="rep-head">
+      <nav class="rep-tabs">${REPORT_TABS.map(([k, n]) => `<a href="#/reports${k ? "?s=" + k : ""}" class="${k === section ? "active" : ""}">${n}</a>`).join("")}</nav>
+      <div class="rep-mode"><button class="${mode === "table" ? "active" : ""}" data-mode="table">☰ Jadval</button>
+        <button class="${mode === "grid" ? "active" : ""}" data-mode="grid">▦ Katak</button></div>
+    </div>
+    ${mode === "grid" ? `<div class="rep-grid">${list.map((r) => `<a class="rep-tile" href="#/reports/r/${r.key}">
+        <b>${esc(r.title)}</b><small class="muted">${esc(r.description || "")}</small></a>`).join("")}</div>`
+      : `<div class="panel"><table class="list rep-list"><thead><tr><th style="width:50px">№</th><th>Nomi</th><th></th></tr></thead>
+        <tbody>${list.map((r, i) => `<tr data-key="${r.key}"><td>${i + 1}</td><td><b>${esc(r.title)}</b>
+          ${r.description ? `<br><small class="muted">${esc(r.description)}</small>` : ""}</td>
+          <td class="right"><a href="#/reports/r/${r.key}" title="Ochish">↗</a></td></tr>`).join("")}</tbody></table></div>`}`);
+  $$("[data-mode]", view).forEach((b) => b.addEventListener("click", () => {
+    try { localStorage.setItem("reports-mode", b.dataset.mode); } catch { /* ruxsat yo'q */ }
+    viewReports();
+  }));
+  $$(".rep-list tr[data-key]", view).forEach((tr) => tr.addEventListener("click", () => go(`#/reports/r/${tr.dataset.key}`)));
+}
+
+function monthStart(d) { return d.slice(0, 8) + "01"; }
+
+function reportCell(v, type) {
+  if (v === null || v === undefined || v === "") return "";
+  if (type === "money") return money(v);
+  if (type === "qty") return fmtQty(v);
+  if (type === "pct") return `${v}%`;
+  if (type === "int") return Number(v).toLocaleString("ru-RU").replace(/,/g, " ");
+  return esc(v);
+}
+
+async function viewReport(key) {
+  const meta = await reportsMeta();
+  const spec = meta.reports.find((r) => r.key === key);
+  if (!spec) return go("#/reports");
+  const params = new URLSearchParams(location.hash.split("?")[1] || "");
+  if (!params.get("from")) params.set("from", monthStart(today()));
+  if (!params.get("to")) params.set("to", today());
+  const res = await api("GET", `/api/reports/run/${key}?${params}`);
+  const o = meta.options;
+  const f = spec.filters;
+  const sel = (name, label, items, empty) => `<label class="rep-f"><span>${label}</span><select name="${name}">
+      <option value="">${empty}</option>${items.map((x) => `<option value="${x.id}" ${String(x.id) === params.get(name) ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select></label>`;
+  const hours = Array.from({ length: 24 }, (_, h) => h);
+  const hourSel = (name, def) => `<select name="${name}">${hours.map((h) => `<option value="${h}" ${String(ifNull(params.get(name), def)) === String(h) ? "selected" : ""}>${String(h).padStart(2, "0")}:00</option>`).join("")}</select>`;
+  const custName = (o.customers.find((c) => String(c.id) === params.get("customer")) || {}).name || "";
+  const siblings = meta.reports.filter((r) => r.key !== key && (spec.sections.length ? r.sections.some((s) => spec.sections.includes(s)) : !r.sections.length));
+  const numeric = (c) => ["money", "qty", "int", "pct"].includes(c.type);
 
   const view = layout(`
-    <div class="toolbar">
-      <h2>Hisobot</h2>
-      <input type="date" id="from" value="${from}" style="width:auto">
-      <span>—</span>
-      <input type="date" id="to" value="${to}" style="width:auto">
-      <button class="btn primary" id="apply">Ko'rsatish</button>
-      <button class="btn" id="today">Bugun</button>
+    <div class="rep-crumbs"><a href="#/reports">← Hisobotlar</a>${siblings.map((r) => `<a href="#/reports/r/${r.key}">${esc(r.title)}</a>`).join("")}</div>
+    <div class="panel rep-filters">
+      <div class="rep-title"><h2>${esc(res.title)}</h2>${res.description ? `<small class="muted">${esc(res.description)}</small>` : ""}</div>
+      <form id="rep-form" class="rep-form">
+        ${res.period ? `<label class="rep-f"><span>Sana</span><div class="rep-dates">
+            <input type="date" name="from" value="${res.from}"><span>—</span><input type="date" name="to" value="${res.to}"></div></label>
+          <div class="rep-quick">${[["today", "Bugun"], ["week", "7 kun"], ["month", "Shu oy"], ["prev", "O'tgan oy"], ["year", "Shu yil"]]
+            .map(([k, n]) => `<button type="button" class="btn small" data-q="${k}">${n}</button>`).join("")}</div>`
+          : `<p class="muted rep-now">📌 Hozirgi holat bo'yicha</p>`}
+        ${f.includes("hours") ? `<label class="rep-f"><span>Vaqt</span><div class="rep-dates">
+            <select name="hours_mode"><option value="">Butun kun</option><option value="range" ${params.has("hour_from") ? "selected" : ""}>Soat oralig'i</option></select>
+            <span class="rep-hours ${params.has("hour_from") ? "" : "hidden"}">${hourSel("hour_from", 9)} — ${hourSel("hour_to", 18)}</span></div></label>` : ""}
+        ${f.includes("group") ? `<label class="rep-f"><span>Vaqt turi</span><select name="group">
+            ${[["day", "Kun"], ["week", "Hafta"], ["month", "Oy"]].map(([k, n]) => `<option value="${k}" ${params.get("group") === k ? "selected" : ""}>${n}</option>`).join("")}</select></label>` : ""}
+        ${f.includes("cashier") ? sel("cashier", "Xodim", o.cashiers, "Barcha xodimlar") : ""}
+        ${f.includes("customer") ? `<label class="rep-f"><span>Mijoz</span>
+            <input name="customer_name" list="rep-customers" value="${esc(custName)}" placeholder="Barcha mijozlar" autocomplete="off">
+            <datalist id="rep-customers">${o.customers.map((c) => `<option value="${esc(c.name)}">${esc(c.phone || "")}</option>`).join("")}</datalist></label>` : ""}
+        ${f.includes("category") ? sel("category", "Kategoriya", o.categories.concat([{ id: "none", name: "Kategoriyasiz" }]), "Barcha kategoriyalar") : ""}
+        ${f.includes("method") ? sel("method", "To'lov turi", o.methods, "Barcha to'lov turlari") : ""}
+        ${f.includes("supplier") ? sel("supplier", "Ta'minotchi", o.suppliers, "Barcha ta'minotchilar") : ""}
+        ${f.includes("account") ? sel("account", "Hisob", o.accounts, "Barcha hisoblar") : ""}
+        <div class="rep-actions"><button class="btn primary">🔍 Ko'rsatish</button>
+          <button type="button" class="btn" id="rep-reset">Tozalash</button>
+          <a class="btn" id="rep-xlsx" href="/api/reports/xlsx/${key}?${params}" download>⬇️ Excel</a></div>
+      </form>
     </div>
-    <div class="stats">
-      <div class="stat"><div class="label">Tushum</div><div class="value">${money(r.summary.revenue)}</div></div>
-      <div class="stat"><div class="label">Cheklar</div><div class="value">${r.summary.orders}</div></div>
-      <div class="stat"><div class="label">O'rtacha chek</div><div class="value">${money(r.summary.average)}</div></div>
-      <div class="stat"><div class="label">Tannarx</div><div class="value">${money(r.summary.cost)}</div></div>
-      <div class="stat"><div class="label">Foyda</div><div class="value profit">${money(r.summary.profit)}</div></div>
-      <div class="stat"><div class="label">Chegirmalar</div><div class="value">${money(r.summary.discount)}</div></div>
-    </div>
-    <div class="report-grid">
-      <div class="panel"><h3>To'lov turlari</h3>
-        <table class="list">
-          ${r.by_method.map((m) => `<tr><td>${METHOD_NAMES[m.method] || m.method}</td><td>${m.orders} ta</td><td class="right">${money(m.revenue)}</td></tr>`).join("")
-            || `<tr><td class="muted">Ma'lumot yo'q</td></tr>`}
-        </table>
-      </div>
-      <div class="panel"><h3>Ko'p sotilgan tovarlar</h3>
-        <table class="list">
-          ${r.top_products.map((p) => `<tr><td>${esc(p.name)}</td><td class="nowrap">${fmtQty(p.qty)} ${UNITS[p.unit] || ""}</td><td class="right">${money(p.revenue)}</td>
-            <td class="right muted" title="Foyda">+${money(p.profit)}</td></tr>`).join("")
-            || `<tr><td class="muted">Ma'lumot yo'q</td></tr>`}
-        </table>
-      </div>
-      <div class="panel"><h3>Kassirlar</h3>
-        <table class="list">
-          ${r.by_cashier.map((w) => `<tr><td>${esc(w.name)}</td><td>${w.orders} ta</td><td class="right">${money(w.revenue)}</td></tr>`).join("")
-            || `<tr><td class="muted">Ma'lumot yo'q</td></tr>`}
-        </table>
-      </div>
-    </div>
-    <p class="muted">Har bir chekni ko'rish: <a href="#/reports/sales?from=${from}&to=${to}">Savdolar →</a></p>`);
+    ${res.cards.length ? `<div class="rep-cards">${res.cards.map((c) => `<div class="rep-card"><small>${esc(c.label)}</small>
+      <b>${c.type === "money" ? money(c.value) : reportCell(c.value, c.type)}</b></div>`).join("")}</div>` : ""}
+    <div id="rep-chart"></div>
+    <div class="panel"><div class="table-scroll"><table class="list rep-table" id="rep-table"></table></div>
+      ${res.rows.length ? `<p class="muted">${res.rows.length} ta qator</p>` : ""}</div>`);
 
-  $("#apply").addEventListener("click", () => go(`#/reports?from=${$("#from").value}&to=${$("#to").value}`));
-  $("#today").addEventListener("click", () => go("#/reports"));
+  // diagramma: eng katta 30 ta qiymat
+  if (res.chart && res.rows.length > 1) {
+    const pts = res.rows.slice(0, 30);
+    const max = Math.max(...pts.map((r) => Math.abs(r[res.chart.value] || 0)), 1);
+    $("#rep-chart", view).innerHTML = `<div class="panel rep-chart">${pts.map((r) => `<div class="rep-bar" title="${esc(r[res.chart.label])}: ${money(r[res.chart.value])}">
+        <i style="height:${Math.max(2, Math.round(Math.abs(r[res.chart.value] || 0) * 100 / max))}%"></i>
+        <small>${esc(String(r[res.chart.label]).slice(-10))}</small></div>`).join("")}</div>`;
+  }
+
+  // jadval (ustun sarlavhasini bosib saralash)
+  let sortKey = null;
+  let sortDir = 1;
+  const drawTable = () => {
+    const list = res.rows.slice();
+    if (sortKey) {
+      list.sort((a, b) => {
+        const x = a[sortKey], y = b[sortKey];
+        return (typeof x === "number" && typeof y === "number" ? x - y : String(ifNull(x, "")).localeCompare(String(ifNull(y, "")))) * sortDir;
+      });
+    }
+    $("#rep-table", view).innerHTML = `<thead><tr><th>№</th>${res.columns.map((c) => `<th data-sort="${c.key}" class="${numeric(c) ? "right" : ""}">
+        ${esc(c.label)}${sortKey === c.key ? (sortDir > 0 ? " ▲" : " ▼") : ""}</th>`).join("")}</tr></thead>
+      <tbody>${list.map((r, i) => `<tr><td class="muted">${i + 1}</td>${res.columns.map((c) => `<td class="${numeric(c) ? "right nowrap" : ""}">${
+        c.key === "abc" ? `<span class="badge abc-${esc(r.abc)}">${esc(r.abc)}</span>` : reportCell(r[c.key], c.type)}</td>`).join("")}</tr>`).join("")
+        || `<tr><td colspan="${res.columns.length + 1}" class="muted">Tanlangan davr va filtrlar bo'yicha ma'lumot yo'q</td></tr>`}</tbody>
+      ${Object.keys(res.totals).length && list.length ? `<tfoot><tr><td></td>${res.columns.map((c, i) => `<td class="${numeric(c) ? "right nowrap" : ""}"><b>${
+        i === 0 ? "Jami" : c.key in res.totals ? reportCell(res.totals[c.key], c.type) : ""}</b></td>`).join("")}</tr></tfoot>` : ""}`;
+    $$("[data-sort]", view).forEach((th) => th.addEventListener("click", () => {
+      sortDir = sortKey === th.dataset.sort ? -sortDir : (numeric(res.columns.find((c) => c.key === th.dataset.sort)) ? -1 : 1);
+      sortKey = th.dataset.sort;
+      drawTable();
+    }));
+  };
+  drawTable();
+
+  const form = $("#rep-form", view);
+  const apply = () => {
+    const q = new URLSearchParams();
+    for (const [k, v] of new FormData(form)) {
+      if (v === "" || ["hours_mode", "customer_name", "hour_from", "hour_to"].includes(k)) continue;
+      q.set(k, v);
+    }
+    if (form.hours_mode && form.hours_mode.value === "range") {
+      q.set("hour_from", form.hour_from.value);
+      q.set("hour_to", form.hour_to.value);
+    }
+    if (form.customer_name && form.customer_name.value.trim()) {
+      const c = o.customers.find((x) => x.name === form.customer_name.value.trim());
+      if (c) q.set("customer", c.id);
+    }
+    go(`#/reports/r/${key}?${q}`);
+  };
+  form.addEventListener("submit", (e) => { e.preventDefault(); apply(); });
+  $$("select", form).forEach((s) => s.addEventListener("change", () => {
+    if (s.name === "hours_mode") $(".rep-hours", form).classList.toggle("hidden", s.value !== "range");
+    else apply();
+  }));
+  $$("[data-q]", form).forEach((b) => b.addEventListener("click", () => {
+    const t = today();
+    const d = new Date(t);
+    let from = t, to = t;
+    if (b.dataset.q === "week") { d.setDate(d.getDate() - 6); from = d.toISOString().slice(0, 10); }
+    if (b.dataset.q === "month") from = monthStart(t);
+    if (b.dataset.q === "year") from = t.slice(0, 5) + "01-01";
+    if (b.dataset.q === "prev") {
+      const p = new Date(t.slice(0, 8) + "01");
+      p.setDate(0);
+      to = p.toISOString().slice(0, 10);
+      from = monthStart(to);
+    }
+    form.from.value = from;
+    form.to.value = to;
+    apply();
+  }));
+  $("#rep-reset", view).addEventListener("click", () => go(`#/reports/r/${key}`));
 }
 
 // ------------------------------------------------------------ ombor
@@ -3897,6 +4022,7 @@ const routes = [
   [/^#\/finance\/types$/, viewFinanceTypes, ["finance"]],
   [/^#\/finance\/balances$/, viewBalances, ["finance"]],
   [/^#\/reports$/, viewReports, ["reports"]],
+  [/^#\/reports\/r\/(\w+)$/, viewReport, ["reports"]],
   [/^#\/reports\/sales$/, viewSales, ["reports"]],
   [/^#\/finance\/sales$/, viewSales, ["finance"]],
   [/^#\/users$/, viewUsers, ["users"]],

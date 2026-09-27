@@ -1296,3 +1296,52 @@ a.kpi:hover { border-color: var(--primary); }
 .shop-id { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 20px; letter-spacing: 1px; color: var(--primary); }
 .sync-connect textarea { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; padding: 10px;
   border: 1px solid var(--line); border-radius: 8px; resize: vertical; }
+
+/* --- hisobotlar markazi */
+.rep-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.rep-tabs, .rep-mode { display: flex; gap: 6px; flex-wrap: wrap; background: #fff; border: 1px solid var(--line);
+  border-radius: 12px; padding: 6px; }
+.rep-tabs a, .rep-mode button { padding: 8px 16px; border-radius: 8px; color: var(--primary); text-decoration: none;
+  border: 0; background: none; font: inherit; cursor: pointer; }
+.rep-tabs a.active, .rep-mode button.active { background: var(--primary); color: #fff; }
+.rep-list tbody tr { cursor: pointer; }
+.rep-list tbody tr:hover td { background: #f6fcf7; }
+.rep-list a { text-decoration: none; font-size: 18px; color: var(--primary); }
+.rep-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.rep-tile { display: flex; flex-direction: column; gap: 6px; padding: 16px; border-radius: var(--radius); background: #fff;
+  border: 1px solid var(--line); color: var(--text); text-decoration: none; min-height: 96px; }
+.rep-tile:hover { border-color: var(--primary); }
+.rep-crumbs { display: flex; gap: 4px 14px; flex-wrap: wrap; margin-bottom: 10px; font-size: 13px; }
+.rep-crumbs a { color: var(--muted); text-decoration: none; }
+.rep-crumbs a:first-child { color: var(--primary); font-weight: 600; }
+.rep-crumbs a:hover { color: var(--primary); }
+.rep-title { margin-bottom: 10px; }
+.rep-title h2 { margin: 0; }
+.rep-form { display: flex; flex-wrap: wrap; gap: 10px 12px; align-items: flex-end; }
+.rep-f { display: flex; flex-direction: column; gap: 4px; min-width: 170px; }
+.rep-f > span { font-size: 12px; color: var(--muted); }
+.rep-f select, .rep-f input, .rep-dates select, .rep-dates input { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+  font: inherit; background: #fff; }
+.rep-dates { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.rep-quick { display: flex; gap: 6px; flex-wrap: wrap; }
+.rep-actions { display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap; }
+.rep-actions a.btn { text-decoration: none; }
+.rep-now { margin: 0; align-self: center; }
+.rep-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin: 0 0 14px; }
+.rep-card { background: #fff; border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; }
+.rep-card small { display: block; color: var(--muted); }
+.rep-card b { font-size: 20px; color: var(--primary); }
+.rep-chart { display: flex; align-items: flex-end; gap: 6px; height: 190px; overflow-x: auto; padding: 14px 14px 8px; margin-bottom: 14px; }
+.rep-bar { flex: 1 0 28px; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 4px; }
+.rep-bar i { width: 70%; min-height: 2px; background: linear-gradient(#3ecd56, #1f9e45); border-radius: 6px 6px 0 0; }
+.rep-bar small { font-size: 10px; color: var(--muted); white-space: nowrap; max-width: 60px; overflow: hidden; text-overflow: ellipsis; }
+.rep-table th[data-sort] { cursor: pointer; user-select: none; white-space: nowrap; }
+.rep-table tfoot td { border-top: 2px solid var(--line); background: #f6fcf7; }
+.badge.abc-A { background: #e8f5e9; color: #2e7d32; }
+.badge.abc-B { background: #fff3e0; color: #b26a00; }
+.badge.abc-C { background: #fdecea; color: #c0392b; }
+@media (max-width: 700px) { .rep-f { min-width: 100%; } .rep-actions { margin-left: 0; } }
+.rep-dates input[type=date], .rep-dates select { width: auto; min-width: 0; }
+.rep-f:has(.rep-dates) { min-width: 0; }
+.rep-card b { font-size: 18px; white-space: nowrap; }
+.rep-bar { flex: 1 0 28px; max-width: 70px; }
