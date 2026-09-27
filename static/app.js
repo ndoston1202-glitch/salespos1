@@ -3678,11 +3678,14 @@ async function viewMobileApp() {
   } else {
     // kompyuterda: telefonda ochish uchun manzil va QR kod
     const st = await api("GET", "/api/sync/status").catch(() => ({}));
-    const url = (st.urls || [])[0];
+    // serverga ulangan kompyuterda - server manzili (iPad/telefon istalgan joydan, istalgan internetdan ochadi)
+    const url = st.server_url || (st.urls || [])[0];
+    const anywhere = /^https:/.test(url || "");
     body = `${url ? `<div class="app-open">
         <canvas id="qr" width="180" height="180"></canvas>
         <div><h3>1. Telefonda EproPos'ni oching</h3>
-          <p class="muted">Telefon shu kompyuter bilan bitta Wi-Fi'da bo'lsin. QR kodni telefon kamerasi bilan skanerlang
+          <p class="muted">${anywhere ? "Server manzili — telefon yoki iPad <b>istalgan joydan, istalgan internet</b> (Wi-Fi yoki mobil internet) orqali ochadi."
+            : "Telefon shu kompyuter bilan bitta Wi-Fi'da bo'lsin."} QR kodni telefon kamerasi bilan skanerlang
             yoki brauzerda manzilni yozing:</p><p><code class="big-code">${esc(url)}</code></p>
           <p class="muted">Telefonda <b>Sozlamalar → Mobil ilova</b> bo'limi qurilmangizga mos ilovani o'zi taklif qiladi.</p></div>
       </div>` : ""}

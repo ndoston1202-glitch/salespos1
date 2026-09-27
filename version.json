@@ -1,10 +1,10 @@
 {
-  "version": "1.7.0",
+  "version": "1.7.1",
   "date": "2026-09-27",
   "notes": [
+    "Mobil ilova: serverga ulangan kompyuterda server manzili va QR kod (iPad/iPhone istalgan joydan)",
     "Internetdagi serverga o'rnatish (Contabo va boshqa VPS): bitta buyruq, HTTPS",
     "Kompyuterni serverga ulash: ma'lumotlar serverga ko'chadi, kompyuter oflayn ham ishlaydi",
-    "Kirish himoyasi kuchaytirildi (parolni taxmin qilishga qarshi)",
-    "Mobil ilova sahifasi: iPhone uchun Sideloadly usuli, manzilni nusxalash, AltStore bo'lmasa tushuntirish"
+    "Kirish himoyasi kuchaytirildi (parolni taxmin qilishga qarshi)"
   ]
 }

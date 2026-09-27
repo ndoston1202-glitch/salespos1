@@ -3480,6 +3480,7 @@ def sync_status(conn, user, params, data, query):
     pending = conn.execute("SELECT COUNT(*) FROM sync_changes WHERE origin = 'local' AND seq > ?",
                            (int(cfg["last_push"] or 0),)).fetchone()[0]
     res.update(paired=bool(cfg["token"]), hub_url=cfg["hub_url"], hub_shop=cfg["hub_shop"], pending=pending,
+               server_url=cfg["public_url"] if cfg["public_url"] and cfg["public_url"].startswith("https://") else None,
                internet=bool(cfg["relay_code"]),
                **(sync_worker.status if sync_worker else {}))
     return res
