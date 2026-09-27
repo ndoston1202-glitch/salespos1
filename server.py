@@ -606,7 +606,8 @@ def license_state(conn):
     sid = shop_id(conn)
     code = license_get(conn, "license")
     day = checked_today(conn)
-    key = (sid, code, day, VENDOR_KEY)
+    suspended = license_get(conn, "suspended") == "1"
+    key = (sid, code, day, VENDOR_KEY, suspended)
     if key in _license_cache:
         return dict(_license_cache[key])
     info, trial = None, False
@@ -626,10 +627,12 @@ def license_state(conn):
     left = (until - day).days
     state = ("active" if left > WARN_DAYS else "warning" if left >= 0
              else "grace" if left >= -GRACE_DAYS else "expired")
+    if suspended and state != "expired":
+        state = "suspended"  # sotuvchi vaqtincha to'xtatgan
     res = {"state": state, "until": until.isoformat(), "days_left": left, "trial": trial, "shop_id": sid,
            "vendor": (info or {}).get("n") or license_get(conn, "vendor_name") or "",
            "phone": (info or {}).get("p") or license_get(conn, "vendor_phone") or "",
-           "grace_days": GRACE_DAYS}
+           "grace_days": GRACE_DAYS, "suspended": suspended}
     _license_cache.clear()
     _license_cache[key] = res
     return dict(res)
@@ -3762,10 +3765,71 @@ def license_activate(conn, user, params, data, query):
     license_set(conn, "license", re.sub(r"\s+", "", data["code"]))
     if not license_get(conn, "vendor_key"):
         license_set(conn, "vendor_key", info["k"])  # birinchi faollashtirish - sotuvchi kaliti eslab qolinadi
+    if info.get("r"):  # davom ettirish kodi - vaqtincha to'xtatish bekor qilinadi
+        license_set(conn, "suspended", "0")
     license_set(conn, "vendor_name", info.get("n") or "")
     license_set(conn, "vendor_phone", info.get("p") or "")
     write_journal(conn, user, "settings", entry("Obuna faollashtirildi", f"{info['u']} gacha"), "license")
     return license_state(conn)
+
+
+def check_vendor_status(conn):
+    """Sotuvchining imzolangan holat ro'yxatini o'qiydi (internet bo'lsa): do'kon to'xtatilganmi."""
+    with db_lock:
+        key = trusted_vendor_key(conn)
+        sid = shop_id(conn)
+        last = int(license_get(conn, "status_ts") or 0)
+    if not key:
+        return None
+    try:
+        with sync._web.open(f"{sync.RELAY}/{obuna.status_topic(key)}/json?poll=1&since=all", timeout=20) as res:
+            lines = res.read().decode().splitlines()
+    except (OSError, ValueError):
+        return None
+    best = None
+    for line in lines:
+        try:
+            status = obuna.read_status(json.loads(line).get("message"), key)
+        except (ValueError, TypeError, AttributeError):
+            continue
+        if status["ts"] > last and (not best or status["ts"] > best["ts"]):
+            best = status
+    if best:
+        with db_lock:
+            license_set(conn, "suspended", "1" if sid in best["x"] else "0")
+            license_set(conn, "status_ts", str(best["ts"]))
+            conn.commit()
+    return best
+
+
+class StatusWatcher:
+    """Fonda har 30 daqiqada sotuvchi holatini tekshiradi."""
+
+    def __init__(self, conn):
+        self.conn = conn
+
+    def start(self):
+        threading.Thread(target=self.loop, daemon=True, name="epropos-status").start()
+
+    def loop(self):
+        time.sleep(20)
+        while True:
+            try:
+                check_vendor_status(self.conn)
+            except Exception:
+                pass
+            time.sleep(1800)
+
+
+@route("POST", "/api/license/check")
+def license_check(conn, user, params, data, query):
+    def run():
+        check_vendor_status(conn)
+        with db_lock:
+            res = license_state(conn)
+            conn.commit()
+        return res
+    return Deferred(run)
 
 
 # --- dastur ichida yangilash
@@ -4176,8 +4240,12 @@ class Handler(BaseHTTPRequestHandler):
         user = self.current_user(conn)
         if not user:
             raise ApiError(401, "Tizimga kiring")
-        if not path.startswith(LICENSE_FREE) and license_state(conn)["state"] == "expired":
-            raise ApiError(402, "Obuna muddati tugagan. Dasturni faollashtirish uchun sotuvchiga murojaat qiling")
+        if not path.startswith(LICENSE_FREE):
+            lic_state = license_state(conn)["state"]
+            if lic_state == "expired":
+                raise ApiError(402, "Obuna muddati tugagan. Dasturni faollashtirish uchun sotuvchiga murojaat qiling")
+            if lic_state == "suspended":
+                raise ApiError(402, "Dastur sotuvchi tomonidan vaqtincha to'xtatilgan. Sotuvchiga murojaat qiling")
         path_matched = False
         for r_method, pattern, perms, fn in ROUTES:
             m = pattern.match(path)
@@ -4348,6 +4416,7 @@ def make_server(port=PORT, host="0.0.0.0", poll_bots=False):
         global sync_worker
         sync_worker = SyncWorker(conn)
         sync_worker.start()
+    StatusWatcher(conn).start()
     if poll_bots:  # mijozlar botiga kelgan xabarlarni o'qish
         global customer_poller
         customer_poller = CustomerBotPoller(conn)

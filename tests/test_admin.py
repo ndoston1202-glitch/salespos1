@@ -68,6 +68,32 @@ class AdminTest(unittest.TestCase):
             # to'lovsiz kod
             _, res = self.call("POST", f"/api/clients/{c['id']}/code", {"until": "2027-06-01", "save": True})
             self.assertEqual(res["client"]["paid_until"], "2027-06-01")
+            # vaqtincha to'xtatish: imzolangan ro'yxat e'lon qilinadi, davom ettirishda kod beriladi
+            from http.server import ThreadingHTTPServer
+            from test_sync import FakeRelay
+            relay = ThreadingHTTPServer(("127.0.0.1", 0), FakeRelay)
+            threading.Thread(target=relay.serve_forever, daemon=True).start()
+            admin.sync.RELAY = f"http://127.0.0.1:{relay.server_address[1]}"
+            os.environ["NO_PROXY"] = os.environ["no_proxy"] = "127.0.0.1,localhost"
+            try:
+                _, res = self.call("POST", f"/api/clients/{c['id']}/suspend", {"suspended": True})
+                self.assertEqual(res["client"]["status"], "suspended")
+                admin.publisher.publish()
+                secret = self.server.secret
+                topic = obuna.status_topic(obuna.public_key(secret))
+                status = obuna.read_status(FakeRelay.topics[topic][-1], obuna.public_key(secret))
+                self.assertEqual(status["x"], ["1A2B-3C4D-5E6F"])
+                _, res = self.call("POST", f"/api/clients/{c['id']}/suspend", {"suspended": False})
+                self.assertEqual((res["client"]["status"], obuna.read_code(res["code"]).get("r")), ("active", 1))
+                admin.publisher.publish()
+                self.assertEqual(obuna.read_status(FakeRelay.topics[topic][-1], obuna.public_key(secret))["x"], [])
+            finally:
+                relay.shutdown()
+            # demo: yangi mijozga sotuvchi belgilagan sinov muddati
+            self.assertEqual(self.call("POST", "/api/clients", {"business": "Demo", "demo_until": "2027-01-17"})[0], 400)
+            _, d = self.call("POST", "/api/clients", {"business": "Demo do'kon", "shop_id": "BBBB-CCCC-DDDD",
+                                                      "demo_until": "2027-01-17"})
+            self.assertEqual((d["paid_until"], d["demo"], obuna.read_code(d["code"])["u"]), ("2027-01-17", True, "2027-01-17"))
             # boshqa sayt (Host) orqali so'rov rad etiladi
             self.assertEqual(self.call("GET", "/api/state", host="evil.example")[0], 403)
             # zaxira: kalit va ma'lumotlar

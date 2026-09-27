@@ -75,7 +75,7 @@ async function api(method, url, body) {
   });
   const data = await res.json().catch(() => ({}));
   if (res.status === 402) {  // obuna muddati tugagan
-    if (state.settings.license) state.settings.license.state = "expired";
+    if (state.settings.license && state.settings.license.state !== "suspended") state.settings.license.state = "expired";
     if (location.hash !== "#/license") location.hash = "#/license";
   }
   if (res.status === 401 && url !== "/api/login") {
@@ -3619,7 +3619,8 @@ async function viewUpdate() {
 // ------------------------------------------------------------ obuna (litsenziya)
 
 function licenseLocked() {
-  return !!(state.settings.license && state.settings.license.state === "expired");
+  const lic = state.settings.license;
+  return !!(lic && (lic.state === "expired" || lic.state === "suspended"));
 }
 
 function licenseBanner() {
@@ -3636,7 +3637,7 @@ function licenseBanner() {
 
 function licenseHtml(lic) {
   const labels = { active: ["ok", "Faol"], warning: ["warn", "Tugashiga oz qoldi"], grace: ["off", "Muddati tugadi"],
-    expired: ["off", "Bloklangan"] };
+    expired: ["off", "Bloklangan"], suspended: ["off", "Vaqtincha to'xtatilgan"] };
   const [cls, label] = labels[lic.state] || ["", lic.state];
   const contact = lic.vendor || lic.phone
     ? `<p>To'lov va faollashtirish uchun: <b>${esc(lic.vendor)}</b> ${lic.phone ? `<a href="tel:${esc(lic.phone.replace(/\s/g, ""))}">${esc(lic.phone)}</a>` : ""}</p>`
@@ -3662,12 +3663,16 @@ function licenseHtml(lic) {
 async function viewLicense() {
   const lic = await api("GET", "/api/license");
   state.settings.license = lic;
-  const locked = lic.state === "expired";
+  const suspended = lic.state === "suspended";
+  const locked = lic.state === "expired" || suspended;
   const inner = `<div class="panel sync-panel" style="max-width:640px">
-      <h2>${locked ? "🔒 Obuna muddati tugagan" : "🔑 Obuna"}</h2>
-      ${locked ? `<p>Dastur vaqtincha bloklandi — ma'lumotlaringiz saqlanib turibdi. Obuna to'lovini qilib,
+      <h2>${suspended ? "⏸ Dastur vaqtincha to'xtatilgan" : locked ? "🔒 Obuna muddati tugagan" : "🔑 Obuna"}</h2>
+      ${suspended ? `<p>Dastur sotuvchi tomonidan vaqtincha to'xtatildi — ma'lumotlaringiz saqlanib turibdi.
+        Sotuvchi qayta yoqsa, internetga ulanganda dastur o'zi ochiladi (yoki sotuvchi bergan kodni kiriting).</p>`
+        : locked ? `<p>Dastur vaqtincha bloklandi — ma'lumotlaringiz saqlanib turibdi. Obuna to'lovini qilib,
         sotuvchi yuborgan <b>faollashtirish kodini</b> kiriting.</p>` : ""}
       ${licenseHtml(lic)}
+      ${locked ? `<button class="btn" id="lic-check">🔄 Holatni tekshirish</button>` : ""}
     </div>`;
   let view;
   if (locked) {  // menyusiz sahifa: faqat obuna va chiqish
@@ -3679,6 +3684,13 @@ async function viewLicense() {
     view = layout(inner);
   }
   $$(".copy-btn", view).forEach((b) => b.addEventListener("click", () => copyText(b.dataset.copy)));
+  const check = $("#lic-check", view);
+  if (check) check.addEventListener("click", safe(async () => {
+    const res = await api("POST", "/api/license/check");
+    state.settings.license = res;
+    if (res.state === "expired" || res.state === "suspended") toast("Holat o'zgarmadi", true);
+    else { toast("Dastur ochildi ✅"); go(defaultRoute()); }
+  }));
   $("#lic-form", view).addEventListener("submit", safe(async (e) => {
     e.preventDefault();
     const res = await api("POST", "/api/license", { code: e.target.code.value });

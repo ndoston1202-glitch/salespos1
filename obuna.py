@@ -156,7 +156,7 @@ def normalize_shop_id(text):
     return "-".join(raw[i:i + 4] for i in range(0, 12, 4)) if len(raw) == 12 else None
 
 
-def make_code(secret, shop_id, until, vendor="", phone="", customer=""):
+def make_code(secret, shop_id, until, vendor="", phone="", customer="", resume=False):
     """Faollashtirish kodi: shop_id do'koni `until` (YYYY-MM-DD) sanasigacha ishlaydi."""
     shop = normalize_shop_id(shop_id)
     if not shop:
@@ -164,6 +164,8 @@ def make_code(secret, shop_id, until, vendor="", phone="", customer=""):
     date.fromisoformat(until)
     payload = {"s": shop, "u": until, "i": date.today().isoformat(), "n": vendor, "p": phone, "c": customer,
                "k": _b64(public_key(secret))}
+    if resume:  # internetsiz do'kon uchun: vaqtincha to'xtatishni bekor qiladi
+        payload["r"] = 1
     data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
     return PREFIX + _b64(data) + "." + _b64(sign(secret, data))
 
@@ -185,4 +187,31 @@ def read_code(code, trusted_key=None):
         raise ValueError("Bu kod boshqa sotuvchiniki")
     if not verify(key, data, signature):
         raise ValueError("Kod noto'g'ri (imzo mos emas)")
+    return payload
+
+
+# --- vaqtincha to'xtatish: admin panel imzolangan holat ro'yxatini e'lon qiladi, EproPos internetda tekshiradi
+
+def status_topic(public):
+    """Sotuvchining holat kanali nomi (ochiq kalitdan)."""
+    return "epropos-v-" + hashlib.sha256(public).hexdigest()[:20]
+
+
+def make_status(secret, suspended, ts):
+    """suspended - to'xtatilgan do'kon ID lari; ts - vaqt (eskisi yangisini bosib ketmasligi uchun)."""
+    data = json.dumps({"t": "status", "ts": int(ts), "x": sorted(set(suspended))}, separators=(",", ":")).encode()
+    return "ST1-" + _b64(data) + "." + _b64(sign(secret, data))
+
+
+def read_status(text, public):
+    text = str(text or "").strip()
+    if not text.startswith("ST1-") or "." not in text:
+        raise ValueError("Holat noto'g'ri")
+    body, _, sig = text[4:].partition(".")
+    data = _unb64(body)
+    if not verify(public, data, _unb64(sig)):
+        raise ValueError("Holat imzosi mos emas")
+    payload = json.loads(data.decode())
+    if payload.get("t") != "status":
+        raise ValueError("Holat noto'g'ri")
     return payload

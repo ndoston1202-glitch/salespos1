@@ -3,7 +3,8 @@ const $ = (s, r) => (r || document).querySelector(s);
 const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
 const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const money = (n) => Number(n || 0).toLocaleString("ru-RU").replace(/,/g, " ") + " so'm";
-const STATUS = { active: ["ok", "Faol"], warning: ["warn", "Tugayapti"], expired: ["off", "Muddati o'tgan"], new: ["new", "Yangi"] };
+const STATUS = { active: ["ok", "Faol"], warning: ["warn", "Tugayapti"], expired: ["off", "Muddati o'tgan"], new: ["new", "Yangi"],
+  suspended: ["off", "⏸ To'xtatilgan"] };
 let state = {};
 
 async function api(method, url, body) {
@@ -48,6 +49,7 @@ async function copy(text) {
 }
 
 function badge(c) {
+  if (c.demo && (c.status === "active" || c.status === "warning")) return `<span class="badge demo">Demo</span>`;
   const [cls, label] = STATUS[c.status];
   return `<span class="badge ${cls}">${label}</span>`;
 }
@@ -63,7 +65,7 @@ async function viewHome() {
   state = await api("GET", "/api/state");
   const clients = await api("GET", "/api/clients");
   const s = state.stats;
-  const urgent = clients.filter((c) => c.status === "expired" || c.status === "warning");
+  const urgent = clients.filter((c) => ["expired", "warning", "suspended"].includes(c.status));
   $("#view").innerHTML = `
     ${!state.settings.vendor_name ? `<div class="notice">Avval <a href="#/settings">Sozlamalar</a>da ismingiz va telefoningizni
       yozing — ular mijozning dasturida "to'lov uchun murojaat" sifatida chiqadi.</div>` : ""}
@@ -72,6 +74,7 @@ async function viewHome() {
       <div class="stat"><small>Faol obunalar</small><b>${s.active}</b></div>
       <div class="stat warn"><small>5 kunda tugaydi</small><b>${s.warning}</b></div>
       <div class="stat bad"><small>Muddati o'tgan</small><b>${s.expired}</b></div>
+      <div class="stat bad"><small>To'xtatilgan</small><b>${s.suspended}</b></div>
       <div class="stat"><small>Oylik kutilgan tushum</small><b>${money(s.monthly)}</b></div>
       <div class="stat"><small>Shu oy to'langan</small><b>${money(s.paid_this_month)}</b></div>
     </div>
@@ -136,17 +139,47 @@ function editModal(c) {
         <label><span>Oylik to'lov (so'm)</span><input name="tariff" type="number" min="0" step="1000" value="${esc(c.tariff || "")}"></label>
       </div>
       <label><span>Izoh</span><textarea name="note" rows="2">${esc(c.note || "")}</textarea></label>
+      ${c.id ? "" : `<fieldset class="demo-box"><legend>🎁 Demo (sinov) muddati</legend>
+        <div class="grid-2">
+          <label><span>Muddat</span><select name="demo">
+            <option value="0">Demo yo'q</option>
+            ${[3, 7, 14, 30].map((d) => `<option value="${d}" ${d === 7 ? "selected" : ""}>${d} kun</option>`).join("")}
+            <option value="date">Boshqa sana...</option></select></label>
+          <label class="demo-date hidden"><span>Qaysi sanagacha</span><input name="demo_date" type="date"></label>
+        </div>
+        <small class="muted" id="demo-hint"></small></fieldset>`}
       <div class="row-btns">${c.id ? `<button type="button" class="btn danger-text" id="del">Arxivga olish</button>` : ""}
         <button class="btn primary">Saqlash</button></div>
     </form>`);
-  $("#f", m).addEventListener("submit", safe(async (e) => {
+  const f = $("#f", m);
+  const demoUntil = () => {
+    if (!f.demo || f.demo.value === "0") return "";
+    if (f.demo.value === "date") return f.demo_date.value;
+    const d = new Date(state.today);
+    d.setDate(d.getDate() + Number(f.demo.value));
+    return d.toISOString().slice(0, 10);
+  };
+  if (f.demo) {
+    const hint = () => {
+      $(".demo-date", m).classList.toggle("hidden", f.demo.value !== "date");
+      const until = demoUntil();
+      $("#demo-hint", m).textContent = until ? `Demo kodi ${until} gacha yaratiladi va darhol ko'rsatiladi (Do'kon ID kerak).` : "";
+    };
+    f.demo.addEventListener("change", hint);
+    f.demo_date.addEventListener("change", hint);
+    hint();
+  }
+  f.addEventListener("submit", safe(async (e) => {
     e.preventDefault();
-    const data = Object.fromEntries(new FormData(e.target));
+    const data = Object.fromEntries(new FormData(f));
+    delete data.demo;
+    delete data.demo_date;
+    if (!c.id) data.demo_until = demoUntil();
     const saved = await api(c.id ? "PUT" : "POST", c.id ? `/api/clients/${c.id}` : "/api/clients", data);
     toast("Saqlandi ✅");
-    closeModal();
     await route();
-    clientModal(saved.id);
+    if (saved.code) showCode(saved, saved.code, saved.paid_until);
+    else clientModal(saved.id);
   }));
   const del = $("#del", m);
   if (del) del.addEventListener("click", safe(async () => {
@@ -172,7 +205,11 @@ async function clientModal(id) {
       <button class="btn primary" id="pay">💰 To'lov qabul qilish</button>
       <button class="btn" id="code">🔑 Kod (to'lovsiz)</button>
       <button class="btn" id="edit">✏️ Tahrirlash</button>
+      ${c.suspended ? `<button class="btn primary" id="resume">▶️ Davom ettirish</button>`
+        : `<button class="btn danger-text" id="suspend">⏸ Vaqtincha to'xtatish</button>`}
     </div>
+    ${c.suspended ? `<div class="notice error-notice">Dastur vaqtincha to'xtatilgan. Mijozning EproPos'i internetga
+      ulanganda (30 daqiqagacha) bloklanadi.</div>` : ""}
     <h3>To'lovlar tarixi</h3>
     ${c.payments.length ? `<div class="table-scroll"><table class="list">
       <thead><tr><th>Sana</th><th>Summa</th><th>Oy</th><th>Qaysi sanagacha</th><th></th></tr></thead>
@@ -183,6 +220,28 @@ async function clientModal(id) {
   $("#edit", m).addEventListener("click", () => editModal(c));
   $("#pay", m).addEventListener("click", () => payModal(c));
   $("#code", m).addEventListener("click", () => freeCodeModal(c));
+  const sus = $("#suspend", m);
+  if (sus) sus.addEventListener("click", safe(async () => {
+    if (!confirm(`${c.business} dasturi vaqtincha to'xtatilsinmi?\n\nMijozning EproPos'i internetga ulanganda ` +
+      "(30 daqiqagacha) bloklanadi. Ma'lumotlari o'chmaydi, \"Davom ettirish\" bilan qayta ochiladi.")) return;
+    await api("POST", `/api/clients/${c.id}/suspend`, { suspended: true });
+    toast("To'xtatildi ⏸");
+    route();
+    clientModal(c.id);
+  }));
+  const resume = $("#resume", m);
+  if (resume) resume.addEventListener("click", safe(async () => {
+    const res = await api("POST", `/api/clients/${c.id}/suspend`, { suspended: false });
+    route();
+    if (res.code) {
+      showCode(res.client, res.code, res.until);
+      $(".modal p").insertAdjacentHTML("afterend", `<div class="notice">Dastur internet orqali o'zi ochiladi (30 daqiqagacha).
+        Mijozda internet bo'lmasa yoki shoshilinch bo'lsa - shu kodni yuboring.</div>`);
+    } else {
+      toast("Davom ettirildi ▶️");
+      clientModal(c.id);
+    }
+  }));
   $$("[data-code]", m).forEach((b) => b.addEventListener("click", () => showCode(c, b.dataset.code, b.dataset.until)));
 }
 
@@ -264,6 +323,10 @@ async function viewSettings() {
         <button class="btn primary">Saqlash</button>
       </form>
       <p class="muted">Yangi ism/telefon keyingi yaratilgan kodlarda chiqadi.</p>
+      <h3>📡 Vaqtincha to'xtatish xizmati</h3>
+      <p class="muted">To'xtatilgan mijozlar ro'yxati internet orqali e'lon qilinadi (shu panel ochiq turganda).
+        ${state.publish && state.publish.last_ok ? `Oxirgi e'lon: <b>${esc(state.publish.last_ok)}</b> ✅` : ""}</p>
+      ${state.publish && state.publish.error ? `<div class="notice error-notice">${esc(state.publish.error)}</div>` : ""}
       <h3>🔐 Kalitlar va zaxira</h3>
       <p>Kodlar shu kompyuterdagi <b>maxfiy kalit</b> bilan imzolanadi. Uni yo'qotsangiz, mavjud mijozlarga yangi kod bera
         olmaysiz — <b>zaxira nusxani</b> flesh yoki bulutda saqlang va hech kimga bermang.</p>

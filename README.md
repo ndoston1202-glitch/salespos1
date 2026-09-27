@@ -99,6 +99,10 @@ EproPos'ni biznes egalariga oylik obuna bilan sotish uchun.
 - Mijozning EproPos'ida: **Sozlamalar → Obuna** — Do'kon ID (sizga aytadi) va kod kiritish joyi
 - Yangi o'rnatilgan dastur **14 kun** sinov muddatida ishlaydi. Muddat tugashiga 5 kun qolganda ogohlantirish chiqadi,
   tugagach 3 kun imtiyoz, keyin dastur bloklanadi (ma'lumotlar saqlanadi) — kod kiritilsa darhol ochiladi
+- Yangi mijoz qo'shishda **demo (sinov) muddatini** o'zingiz tanlaysiz (3/7/14/30 kun yoki sana) — demo kodi darhol chiqadi
+- **Vaqtincha to'xtatish**: admin panelda "⏸ Vaqtincha to'xtatish" — mijozning EproPos'i internetga ulanganda
+  (30 daqiqagacha) bloklanadi; "▶️ Davom ettirish" bilan qayta ochiladi (internetsiz do'kon uchun davom ettirish kodi beriladi).
+  Ro'yxat imzolangan holda ntfy.sh orqali e'lon qilinadi (admin panel ochiq turganda)
 - Kompyuter va unga ulangan telefonlar — bitta obuna (bitta Do'kon ID)
 - Kodlar raqamli imzo (Ed25519) bilan himoyalangan: ularni faqat admin paneldagi maxfiy kalit yaratadi.
   Maxfiy kalit va ma'lumotlar: `%APPDATA%\EproPosAdmin` — **Sozlamalar → Zaxira nusxa** ni albatta saqlang

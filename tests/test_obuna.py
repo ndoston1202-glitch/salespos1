@@ -1,15 +1,20 @@
 """Obuna: sinov muddati, muddat tugaganda bloklash, sotuvchi kodi bilan faollashtirish."""
 
+import json
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
+import urllib.request
+from http.server import ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import obuna  # noqa: E402
 from test_api import Client  # noqa: E402
-from test_sync import start  # noqa: E402
+from test_sync import FakeRelay, start  # noqa: E402
 
 
 class ObunaTest(unittest.TestCase):
@@ -27,11 +32,45 @@ class ObunaTest(unittest.TestCase):
             self.proc.wait(5)
             self.proc = None
 
-    def run_at(self, day):
+    def run_at(self, day, **extra):
         """Kompyuterni berilgan sanada (qayta) ishga tushiradi - baza o'sha."""
         self.stop()
-        self.proc, url = start("hub", self.tmp.name, "hub", EPROPOS_TODAY=day)
+        self.proc, url = start("hub", self.tmp.name, "hub", EPROPOS_TODAY=day, **extra)
         return Client(url).pin("1234")
+
+    def test_suspend_resume(self):
+        relay = ThreadingHTTPServer(("127.0.0.1", 0), FakeRelay)
+        threading.Thread(target=relay.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{relay.server_address[1]}"
+        try:
+            c = self.run_at("2027-01-01", EPROPOS_RELAY=base, NO_PROXY="127.0.0.1", no_proxy="127.0.0.1")
+            shop = c.call("GET", "/api/license")[1]["shop_id"]
+            vendor = obuna.new_secret()
+            topic = obuna.status_topic(obuna.public_key(vendor))
+            c.call("POST", "/api/license", {"code": obuna.make_code(vendor, shop, "2027-06-01")})
+
+            def publish(ids, ts, secret=vendor):
+                req = urllib.request.Request(f"{base}/{topic}", data=obuna.make_status(secret, ids, ts).encode(), method="POST")
+                urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req).read()
+
+            publish(["AAAA-BBBB-CCCC"], 100)  # boshqa do'kon to'xtatilgan - bizga ta'sir yo'q
+            self.assertEqual(c.call("POST", "/api/license/check")[1]["state"], "active")
+            publish([shop], 200)
+            publish([], 150, obuna.new_secret())  # begona imzo - e'tiborsiz
+            self.assertEqual(c.call("POST", "/api/license/check")[1]["state"], "suspended")
+            self.assertEqual(c.call("GET", "/api/products")[0], 402)
+            FakeRelay.topics[topic] = FakeRelay.topics[topic][:1]  # eski (ts=100) xabar qayta kelsa ham
+            self.assertEqual(c.call("POST", "/api/license/check")[1]["state"], "suspended")
+            publish([], 300)  # davom ettirildi
+            self.assertEqual(c.call("POST", "/api/license/check")[1]["state"], "active")
+            self.assertEqual(c.call("GET", "/api/products")[0], 200)
+            # internetsiz: davom ettirish kodi
+            publish([shop], 400)
+            self.assertEqual(c.call("POST", "/api/license/check")[1]["state"], "suspended")
+            code = obuna.make_code(vendor, shop, "2027-06-01", resume=True)
+            self.assertEqual(c.call("POST", "/api/license", {"code": code})[1]["state"], "active")
+        finally:
+            relay.shutdown()
 
     def test_trial_block_activate(self):
         c = self.run_at("2027-01-01")

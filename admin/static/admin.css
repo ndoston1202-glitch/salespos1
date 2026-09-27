@@ -30,3 +30,6 @@ body { background: var(--bg); }
 #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 2000; }
 #toast div { background: #16241c; color: #fff; padding: 10px 16px; border-radius: 10px; margin-top: 8px; }
 #toast div.err { background: #c0392b; }
+.badge.demo { background: #e3f2fd; color: #1565c0; }
+.demo-box { border: 1px dashed var(--primary); border-radius: 10px; padding: 10px 12px; background: #f6fcf7; }
+.demo-box legend { padding: 0 6px; font-weight: 600; }

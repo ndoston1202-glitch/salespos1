@@ -12,6 +12,8 @@ import re
 import sqlite3
 import sys
 import threading
+import time
+import urllib.request
 import webbrowser
 import zipfile
 from datetime import date, datetime
@@ -22,6 +24,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 import obuna  # noqa: E402
+import sync  # noqa: E402  (e'lon kanali manzili)
 
 PORT = int(os.environ.get("EPROPOS_ADMIN_PORT", "8200"))
 DATA_DIR = os.environ.get("EPROPOS_ADMIN_DATA") or (
@@ -88,7 +91,48 @@ def connect():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(clients)")]
+    if "suspended" not in cols:
+        conn.execute("ALTER TABLE clients ADD COLUMN suspended INTEGER NOT NULL DEFAULT 0")
     return conn
+
+
+class Publisher:
+    """To'xtatilgan do'konlar ro'yxatini imzolab e'lon qiladi (o'zgarganda darhol, keyin har 20 daqiqada).
+    Mijozlarning EproPos'i internetga ulanganda shu ro'yxatni tekshiradi."""
+
+    def __init__(self, conn, secret):
+        self.conn, self.secret = conn, secret
+        self.wake = threading.Event()
+        self.last_ok = None
+        self.error = None
+
+    def start(self):
+        threading.Thread(target=self.loop, daemon=True).start()
+
+    def loop(self):
+        while True:
+            try:
+                self.publish()
+            except Exception as e:
+                self.error = str(e)
+            self.wake.wait(1200)
+            self.wake.clear()
+
+    def publish(self):
+        with lock:
+            ids = [r[0] for r in self.conn.execute(
+                "SELECT shop_id FROM clients WHERE suspended = 1 AND archived = 0 AND shop_id IS NOT NULL")]
+        text = obuna.make_status(self.secret, ids, time.time() * 1000)
+        topic = obuna.status_topic(obuna.public_key(self.secret))
+        req = urllib.request.Request(f"{sync.RELAY}/{topic}", data=text.encode(), method="POST",
+                                     headers={"Title": "EproPos"})
+        try:
+            with sync._web.open(req, timeout=20) as res:
+                res.read()
+            self.last_ok, self.error = now(), None
+        except OSError as e:
+            self.error = f"E'lon qilib bo'lmadi (internet bormi?): {e}"
 
 
 def settings(conn):
@@ -99,7 +143,11 @@ def settings(conn):
 
 def client_view(row):
     c = dict(row)
-    if c["paid_until"]:
+    c["demo"] = str(c.pop("last_note", None) or "").startswith("Demo")
+    if c.get("suspended"):
+        c["days_left"] = (date.fromisoformat(c["paid_until"]) - today()).days if c["paid_until"] else None
+        c["status"] = "suspended"
+    elif c["paid_until"]:
         left = (date.fromisoformat(c["paid_until"]) - today()).days
         c["days_left"] = left
         c["status"] = "active" if left > WARN_DAYS else "warning" if left >= 0 else "expired"
@@ -131,7 +179,8 @@ def client_values(data):
 
 
 def get_client(conn, cid):
-    row = conn.execute("SELECT * FROM clients WHERE id = ?", (cid,)).fetchone()
+    row = conn.execute("""SELECT c.*, (SELECT note FROM payments p WHERE p.client_id = c.id ORDER BY p.id DESC LIMIT 1)
+                          AS last_note FROM clients c WHERE id = ?""", (cid,)).fetchone()
     if not row:
         raise ApiError(404, "Mijoz topilmadi")
     return row
@@ -153,27 +202,47 @@ def api(conn, secret, method, path, data):
         paid = conn.execute("SELECT COALESCE(SUM(amount), 0) FROM payments WHERE substr(paid_at, 1, 7) = ?", (month,)).fetchone()[0]
         return {"settings": settings(conn), "public_key": obuna.key_text(obuna.public_key(secret)),
                 "data_dir": DATA_DIR, "today": today().isoformat(),
+                "publish": {"last_ok": publisher.last_ok, "error": publisher.error} if publisher else None,
                 "stats": {"total": len(rows),
                           "active": sum(1 for c in rows if c["status"] in ("active", "warning")),
                           "warning": sum(1 for c in rows if c["status"] == "warning"),
                           "expired": sum(1 for c in rows if c["status"] == "expired"),
+                          "suspended": sum(1 for c in rows if c["status"] == "suspended"),
                           "monthly": sum(c["tariff"] for c in rows if c["status"] in ("active", "warning")),
                           "paid_this_month": paid}}
 
     if method == "GET" and path == "/api/clients":
-        rows = [client_view(r) for r in conn.execute("SELECT * FROM clients WHERE archived = 0 ORDER BY business")]
-        order = {"expired": 0, "warning": 1, "new": 2, "active": 3}
+        rows = [client_view(r) for r in conn.execute(
+            """SELECT c.*, (SELECT note FROM payments p WHERE p.client_id = c.id ORDER BY p.id DESC LIMIT 1) AS last_note
+               FROM clients c WHERE archived = 0 ORDER BY business""")]
+        order = {"expired": 0, "suspended": 1, "warning": 2, "new": 3, "active": 4}
         rows.sort(key=lambda c: (order[c["status"]], c["days_left"] if c["days_left"] is not None else 0))
         return rows
 
     if method == "POST" and path == "/api/clients":
         v = client_values(data)
+        demo = str(data.get("demo_until") or "")
+        if demo:  # yangi mijozga demo (sinov) muddati - sotuvchi o'zi belgilaydi
+            try:
+                if date.fromisoformat(demo) < today():
+                    raise ValueError
+            except ValueError:
+                raise ApiError(400, "Demo muddati sanasi noto'g'ri")
+            if not v["shop_id"]:
+                raise ApiError(400, "Demo kod uchun Do'kon ID kerak (mijozning EproPos'ida: Sozlamalar -> Obuna)")
         cur = conn.execute("""INSERT INTO clients (business, owner, phone, address, shop_id, tariff, note, created_at)
                               VALUES (:business, :owner, :phone, :address, :shop_id, :tariff, :note, :created)""",
                            dict(v, created=now()))
-        return client_view(get_client(conn, cur.lastrowid))
+        client = get_client(conn, cur.lastrowid)
+        if not demo:
+            return client_view(client)
+        code = issue_code(conn, secret, client, demo)
+        conn.execute("UPDATE clients SET paid_until = ? WHERE id = ?", (demo, client["id"]))
+        conn.execute("""INSERT INTO payments (client_id, amount, months, paid_at, until, code, note)
+                        VALUES (?, 0, 0, ?, ?, ?, 'Demo (sinov)')""", (client["id"], now(), demo, code))
+        return dict(client_view(get_client(conn, client["id"])), code=code)
 
-    m = re.match(r"^/api/clients/(\d+)(/pay|/code)?$", path)
+    m = re.match(r"^/api/clients/(\d+)(/pay|/code|/suspend)?$", path)
     if m:
         client = get_client(conn, int(m.group(1)))
         action = m.group(2)
@@ -209,6 +278,19 @@ def api(conn, secret, method, path, data):
                             VALUES (?, ?, ?, ?, ?, ?, ?)""",
                          (client["id"], amount, months, now(), until, code, text(data, "note", 300)))
             return {"code": code, "until": until, "client": client_view(get_client(conn, client["id"]))}
+        if method == "POST" and action == "/suspend":
+            on = bool(data.get("suspended"))
+            conn.execute("UPDATE clients SET suspended = ? WHERE id = ?", (1 if on else 0, client["id"]))
+            if publisher:
+                publisher.wake.set()
+            res = {"client": client_view(get_client(conn, client["id"]))}
+            if not on and client["shop_id"] and client["paid_until"] and date.fromisoformat(client["paid_until"]) >= today():
+                # internetsiz do'kon uchun: qo'lda kiritiladigan "davom ettirish" kodi
+                s = settings(conn)
+                res["code"] = obuna.make_code(secret, client["shop_id"], client["paid_until"], s["vendor_name"],
+                                              s["vendor_phone"], client["business"], resume=True)
+                res["until"] = client["paid_until"]
+            return res
         if method == "POST" and action == "/code":
             # to'lovsiz kod: sinov, bepul muddat yoki kodni qayta yuborish
             until = str(data.get("until") or "")
@@ -318,11 +400,17 @@ class Handler(BaseHTTPRequestHandler):
         self.handle_any("DELETE")
 
 
+publisher = None
+
+
 def make_server(port=PORT):
+    global publisher
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server.daemon_threads = True
     server.conn = connect()
     server.secret = load_secret()
+    publisher = Publisher(server.conn, server.secret)
+    publisher.start()
     return server
 
 
