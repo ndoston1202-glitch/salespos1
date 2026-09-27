@@ -92,20 +92,15 @@ Yuklab olish: **[EproPos.apk](https://github.com/ndoston1202-glitch/salespos1/re
 
 APK `android/` papkasidan GitHub Actions'da yig'iladi (Gradle + Chaquopy).
 
-## 🔑 Obuna va sotuvchi paneli (EproPos Admin)
-EproPos'ni biznes egalariga oylik obuna bilan sotish uchun.
-- **ADMIN_PANEL.bat** — sotuvchi paneli (faqat sizning kompyuteringizda): mijozlar, oylik narx, to'lovlar,
-  obuna muddatlari, faollashtirish kodlari. Kodni "Telegram'da yuborish" tugmasi bilan mijozga jo'natasiz
-- Mijozning EproPos'ida: **Sozlamalar → Obuna** — Do'kon ID (sizga aytadi) va kod kiritish joyi
+## 🔑 Obuna
+EproPos oylik obuna bilan ishlaydi. Obunalar alohida **Obuna Admin** panelida boshqariladi
+(alohida repozitoriya: `ndoston1202-glitch/obuna-admin`, dastur kodi: `epropos`).
+- Mijozning EproPos'ida: **Sozlamalar → Obuna** — Do'kon ID (sotuvchiga aytiladi) va faollashtirish kodi kiritiladigan joy
 - Yangi o'rnatilgan dastur **14 kun** sinov muddatida ishlaydi. Muddat tugashiga 5 kun qolganda ogohlantirish chiqadi,
   tugagach 3 kun imtiyoz, keyin dastur bloklanadi (ma'lumotlar saqlanadi) — kod kiritilsa darhol ochiladi
-- Yangi mijoz qo'shishda **demo (sinov) muddatini** o'zingiz tanlaysiz (3/7/14/30 kun yoki sana) — demo kodi darhol chiqadi
-- **Vaqtincha to'xtatish**: admin panelda "⏸ Vaqtincha to'xtatish" — mijozning EproPos'i internetga ulanganda
-  (30 daqiqagacha) bloklanadi; "▶️ Davom ettirish" bilan qayta ochiladi (internetsiz do'kon uchun davom ettirish kodi beriladi).
-  Ro'yxat imzolangan holda ntfy.sh orqali e'lon qilinadi (admin panel ochiq turganda)
+- Sotuvchi dasturni **vaqtincha to'xtatishi** mumkin: internetga ulanganda (30 daqiqagacha) bloklanadi
 - Kompyuter va unga ulangan telefonlar — bitta obuna (bitta Do'kon ID)
-- Kodlar raqamli imzo (Ed25519) bilan himoyalangan: ularni faqat admin paneldagi maxfiy kalit yaratadi.
-  Maxfiy kalit va ma'lumotlar: `%APPDATA%\EproPosAdmin` — **Sozlamalar → Zaxira nusxa** ni albatta saqlang
+- Kodlar raqamli imzo (Ed25519, `obuna.py`) bilan himoyalangan
 
 ## ☁️ Internetdagi server (Contabo va boshqa VPS)
 Server (Ubuntu/Debian) terminalida bitta buyruq:

@@ -98,7 +98,9 @@ class ObunaTest(unittest.TestCase):
         self.assertEqual(c.call("POST", "/api/license", {"code": old})[0], 400)
         self.assertEqual(c.call("POST", "/api/license", {"code": "EP1-buzilgan.kod"})[0], 400)
 
-        code = obuna.make_code(vendor, shop, "2027-02-20", "Doston", "+998 90 123 45 67", "Do'kon")
+        other_app = obuna.make_code(vendor, shop, "2027-12-31", app="eprocafe")  # boshqa dastur kodi
+        self.assertEqual(c.call("POST", "/api/license", {"code": other_app})[0], 400)
+        code = obuna.make_code(vendor, shop, "2027-02-20", "Doston", "+998 90 123 45 67", "Do'kon", app="epropos")
         status, lic = c.call("POST", "/api/license", {"code": code})
         self.assertEqual((status, lic["state"], lic["until"], lic["vendor"]), (200, "active", "2027-02-20", "Doston"))
         self.assertEqual(c.call("GET", "/api/products")[0], 200)

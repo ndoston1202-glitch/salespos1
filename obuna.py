@@ -1,4 +1,6 @@
-"""Obuna (litsenziya) kodlari: sotuvchining admin paneli imzolaydi, EproPos tekshiradi.
+"""Obuna (litsenziya) kodlari: sotuvchining admin paneli (Obuna Admin) imzolaydi, dastur (EproPos va boshqalar) tekshiradi.
+
+Bu fayl ikki joyda bir xil: Obuna Admin repozitoriyasida va har bir mahsulotning ichida.
 
 Kod ichida: do'kon ID, qaysi sanagacha, sotuvchi nomi va telefoni. Imzo - Ed25519 (RFC 8032, sof Python):
 kodni faqat maxfiy kalit egasi (admin panel) yarata oladi, tekshirish uchun ochiq kalit yetadi.
@@ -156,7 +158,7 @@ def normalize_shop_id(text):
     return "-".join(raw[i:i + 4] for i in range(0, 12, 4)) if len(raw) == 12 else None
 
 
-def make_code(secret, shop_id, until, vendor="", phone="", customer="", resume=False):
+def make_code(secret, shop_id, until, vendor="", phone="", customer="", resume=False, app=""):
     """Faollashtirish kodi: shop_id do'koni `until` (YYYY-MM-DD) sanasigacha ishlaydi."""
     shop = normalize_shop_id(shop_id)
     if not shop:
@@ -166,6 +168,8 @@ def make_code(secret, shop_id, until, vendor="", phone="", customer="", resume=F
                "k": _b64(public_key(secret))}
     if resume:  # internetsiz do'kon uchun: vaqtincha to'xtatishni bekor qiladi
         payload["r"] = 1
+    if app:  # qaysi dastur uchun (masalan "epropos") - boshqa dasturning kodi qabul qilinmaydi
+        payload["a"] = app
     data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
     return PREFIX + _b64(data) + "." + _b64(sign(secret, data))
 

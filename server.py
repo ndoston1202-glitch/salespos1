@@ -543,7 +543,8 @@ PIN_LENGTH = 4
 
 # --- obuna (litsenziya): sotuvchi admin panelda kod beradi, muddat tugasa dastur bloklanadi
 
-VENDOR_KEY = ""  # sotuvchining ochiq kaliti (admin panel -> Sozlamalar). Bo'sh bo'lsa - birinchi faollashtirishdagi kalit
+VENDOR_KEY = ""  # sotuvchining ochiq kaliti (Obuna Admin -> Sozlamalar). Bo'sh bo'lsa - birinchi faollashtirishdagi kalit
+APP_ID = "epropos"  # Obuna Admin'dagi dastur kodi: boshqa dastur uchun berilgan kod qabul qilinmaydi
 TRIAL_DAYS, WARN_DAYS, GRACE_DAYS = 14, 5, 3
 LICENSE_FREE = ("/api/license", "/api/settings", "/api/logout", "/api/update", "/api/sync/", "/api/me")
 _license_cache = {}
@@ -614,7 +615,7 @@ def license_state(conn):
     if code:
         try:
             info = obuna.read_code(code, trusted_vendor_key(conn))
-            if info["s"] != sid:
+            if info["s"] != sid or info.get("a", APP_ID) != APP_ID:
                 info = None
         except ValueError:
             info = None
@@ -3758,6 +3759,8 @@ def license_activate(conn, user, params, data, query):
         info = obuna.read_code(data.get("code"), trusted_vendor_key(conn))
     except ValueError as e:
         raise ApiError(400, str(e))
+    if info.get("a", APP_ID) != APP_ID:
+        raise ApiError(400, "Bu kod boshqa dastur uchun berilgan")
     if info["s"] != shop_id(conn):
         raise ApiError(400, f"Bu kod boshqa do'kon uchun ({info['s']}). Shu do'kon ID: {shop_id(conn)}")
     if date.fromisoformat(info["u"]) < checked_today(conn):
