@@ -12,6 +12,7 @@ import io
 import json
 import mimetypes
 import os
+import random
 import re
 import secrets
 import shutil
@@ -36,6 +37,22 @@ from tunnel import Tunnel
 import xlsx
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def load_conf(path):
+    """epropos.conf: KALIT=qiymat qatorlari (masalan EPROPOS_ROLE=phone). Muhit o'zgaruvchisi ustun."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                key, sep, value = line.strip().partition("=")
+                if sep and key.startswith("EPROPOS_") and key not in os.environ:
+                    os.environ[key.strip()] = value.strip()
+    except OSError:
+        pass
+
+
+CONF_PATH = os.environ.get("EPROPOS_CONF") or os.path.join(BASE_DIR, "epropos.conf")
+load_conf(CONF_PATH)
 mimetypes.add_type("application/manifest+json", ".webmanifest")
 mimetypes.add_type("application/javascript", ".js")  # Windows reestri boshqacha bo'lishi mumkin
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -45,6 +62,8 @@ MAX_IMAGE = 3 * 1024 * 1024
 IMAGE_TYPES = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
 DB_PATH = os.environ.get("EPROPOS_DB", os.path.join(BASE_DIR, "epropos.db"))
 PORT = int(os.environ.get("EPROPOS_PORT", "8100"))
+HOST = os.environ.get("EPROPOS_HOST", "0.0.0.0")
+TRUST_PROXY = os.environ.get("EPROPOS_TRUST_PROXY") == "1"  # serverda: Caddy (HTTPS) orqasida
 # hub - kompyuter (asosiy baza, telefonlar unga ulanadi); phone - telefondagi ilova (o'z bazasi bilan oflayn ishlaydi)
 ROLE = os.environ.get("EPROPOS_ROLE", "hub")
 PLATFORM = os.environ.get("EPROPOS_PLATFORM", "android" if ROLE == "phone" else "desktop")
@@ -411,7 +430,7 @@ def init_db(conn):
                VALUES (?,?,?,?,?,?,?,?)""",
             ("admin", "Administrator", "Administrator", "admin", pw, salt, pin_salt, pin_value),
         )
-    if fresh and ROLE == "hub":
+    if fresh and ROLE == "hub" and not os.environ.get("EPROPOS_NO_DEMO"):
         # Namuna mahsulotlar (faqat yangi kompyuter bazasida) - administrator keyin o'zgartiradi yoki o'chiradi
         demo = {
             "Oziq-ovqat": [("Non", "4780000000011", "dona", 4000, 3000, 50), ("Shakar", "4780000000028", "kg", 14000, 11500, 25.5),
@@ -512,7 +531,7 @@ RECEIPT_DEFAULTS = {
     "show_item_price": True, "show_discount": True, "show_payment": True, "show_change": True,
     "footer_text": "Xaridingiz uchun rahmat!", "paper_width": 80,
 }
-DEFAULT_PIN = "1234"
+DEFAULT_PIN = os.environ.get("EPROPOS_ADMIN_PIN") or "1234"  # serverda o'rnatishda tasodifiy beriladi
 PIN_LENGTH = 4
 
 
@@ -3256,15 +3275,18 @@ def hub_device(conn, token):
 
 
 def client_ip(handler):
-    """Tunnel orqali kelgan so'rovda haqiqiy IP Cloudflare sarlavhasida bo'ladi."""
+    """Tunnel orqali kelgan so'rovda haqiqiy IP Cloudflare sarlavhasida, serverda - Caddy sarlavhasida bo'ladi."""
     if handler.relay:
         return handler.headers.get("CF-Connecting-IP") or handler.client_address[0]
+    if TRUST_PROXY and handler.client_address[0] == "127.0.0.1":
+        forwarded = (handler.headers.get("X-Forwarded-For") or "").split(",")[-1].strip()
+        return forwarded or handler.client_address[0]
     return handler.client_address[0]
 
 
 def sync_hello(conn):
     return {"app": "EproPos", "role": ROLE, "node": conn.sync_node, "shop": get_settings(conn)["shop_name"],
-            "version": RUNNING_VERSION}
+            "version": RUNNING_VERSION, "instance": sync.meta(conn, "instance")}
 
 
 def sync_pair(handler, conn, data):
@@ -3450,7 +3472,8 @@ def sync_status(conn, user, params, data, query):
             return res
         res["devices"] = rows(conn.execute(
             "SELECT id, node, name, created_at, last_sync, last_ip FROM sync_devices WHERE active = 1 ORDER BY id DESC"))
-        res["urls"] = lan_urls()
+        public = os.environ.get("EPROPOS_PUBLIC_URL")  # serverda: https manzil
+        res["urls"] = [public] if public else lan_urls()
         res["internet"] = internet.status() if internet else None
         return res
     cfg = {k: sync.meta(conn, k) for k in ("hub_url", "public_url", "relay_code", "hub_shop", "token", "last_push")}
@@ -3485,8 +3508,8 @@ def sync_connect(conn, user, params, data, query):
     if not code:
         if not re.match(r"^https?://", url):
             url = "http://" + url
-        if not re.search(r":\d+$", url.split("//", 1)[1]):
-            url += f":{PORT}"
+        if url.startswith("http://") and not re.search(r":\d+$", url.split("//", 1)[1]):
+            url += f":{PORT}"  # serverda (https) port shart emas
     pin = str(data.get("pin") or "").strip()
 
     def run():
@@ -3547,6 +3570,62 @@ def sync_disconnect(conn, user, params, data, query):
     for k in ("token", "hub_url", "public_url", "relay_code", "hub_node", "hub_shop"):
         sync.set_meta(conn, k, None)
     return {"ok": True}
+
+
+def write_conf(key, value):
+    """epropos.conf ga sozlama yozadi (kompyuter qayta ishga tushganda ham saqlanadi)."""
+    lines = []
+    try:
+        with open(CONF_PATH, encoding="utf-8") as f:
+            lines = [ln for ln in f.read().splitlines() if not ln.startswith(key + "=")]
+    except OSError:
+        pass
+    lines.append(f"{key}={value}")
+    with open(CONF_PATH, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+@route("POST", "/api/sync/join-server", ("settings",))
+def sync_join_server(conn, user, params, data, query):
+    """Kompyuter (asosiy baza) internetdagi serverga ulanadi: ma'lumotlar serverga ko'chadi,
+    kompyuter esa oflayn ishlashda davom etadi va server bilan sinxronlanadi (xuddi telefon kabi)."""
+    if ROLE != "hub":
+        raise ApiError(400, "Bu qurilma allaqachon serverga/kompyuterga ulangan")
+    url = str(data.get("url") or "").strip().rstrip("/")
+    if not re.match(r"^https?://", url):
+        url = "https://" + url
+    pin = str(data.get("pin") or "").strip()
+    mine = sync.meta(conn, "instance")
+
+    def run():
+        info = sync.hello(url, 15)
+        if not info or info.get("role") != "hub":
+            raise ApiError(400, f"{url} manzilida EproPos serveri topilmadi")
+        if info.get("instance") == mine:
+            raise ApiError(400, "Bu manzil shu kompyuterning o'zi")
+        node = random.randint(1, sync.MAX_PHONE_NODE)
+        try:
+            res = sync.post_json(url + "/api/sync/pair", {"pin": pin, "node": node, "name": "Kompyuter"}, 30)
+        except sync.SyncError as e:
+            raise ApiError(e.status or 502, str(e))
+        with db_lock:
+            try:
+                conn.commit()
+                sync.adopt_all(conn, node)
+                for k, v in (("hub_url", None), ("public_url", url), ("relay_code", None), ("token", res["token"]),
+                             ("hub_node", res["hub_node"]), ("hub_shop", res.get("shop")),
+                             ("last_pull", 0), ("last_push", 0), ("internet", "0")):
+                    sync.set_meta(conn, k, v)
+                write_journal(conn, user, "settings", entry("Kompyuter serverga ulandi", url), "sync_join")
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        write_conf("EPROPOS_ROLE", "phone")
+        os.environ["EPROPOS_ROLE"] = "phone"  # qayta ishga tushgan jarayon uchun
+        threading.Thread(target=restart_server, daemon=True).start()
+        return {"ok": True, "shop": res.get("shop"), "version": RUNNING_VERSION}
+    return Deferred(run)
 
 
 @route("POST", "/api/sync/internet", ("settings",))
@@ -3696,6 +3775,8 @@ def spawn_new_server():
     if internet and internet.tunnel:
         internet.tunnel.stop()
     http_server.server_close()
+    if os.environ.get("INVOCATION_ID"):  # serverda systemd xizmati: uning o'zi qayta ishga tushiradi
+        os._exit(0)
     flags = (subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP) if os.name == "nt" else 0
     log = open(os.path.join(BASE_DIR, "epropos.log"), "a", encoding="utf-8")
     subprocess.Popen([sys.executable, os.path.join(BASE_DIR, "server.py"), "--no-browser", "--restart"],
@@ -3774,28 +3855,41 @@ def journal_detail(conn, user, params, data, query):
 
 
 class LoginGuard:
-    """PIN atigi 4 raqam - taxmin qilib topishning oldini olish: 5 ta xatodan keyin kutish."""
+    """PIN atigi 4 raqam - taxmin qilib topishning oldini olish: 5 ta xatodan keyin kutish.
+    Har keyingi blok ikki barobar uzayadi (1, 2, 4 ... 60 daqiqa); hamma IP lardan jami ko'p xato bo'lsa
+    (internetdagi serverga hujum) - kirish 15 daqiqaga to'xtatiladi."""
 
-    LIMIT, BLOCK = 5, 60
+    LIMIT, BLOCK, MAX_BLOCK = 5, 60, 3600
+    GLOBAL_LIMIT, GLOBAL_WINDOW, GLOBAL_BLOCK = 60, 600, 900
 
     def __init__(self):
-        self.fails = {}
+        self.fails = {}          # ip -> (xatolar, blok tugashi, bloklar soni)
+        self.recent = []         # oxirgi xatolar vaqti (hamma IP lar)
+        self.global_until = 0
         self.lock = threading.Lock()
 
     def blocked(self, ip):
         with self.lock:
-            count, until = self.fails.get(ip, (0, 0))
-            left = int(until - datetime.now().timestamp())
+            t = time.time()
+            _, until, _ = self.fails.get(ip, (0, 0, 0))
+            left = int(max(until, self.global_until) - t)
             return left if left > 0 else 0
 
     def fail(self, ip):
         with self.lock:
-            count, until = self.fails.get(ip, (0, 0))
+            t = time.time()
+            count, until, blocks = self.fails.get(ip, (0, 0, 0))
             count += 1
             if count >= self.LIMIT:
-                self.fails[ip] = (0, datetime.now().timestamp() + self.BLOCK)
+                self.fails[ip] = (0, t + min(self.BLOCK * 2 ** blocks, self.MAX_BLOCK), blocks + 1)
             else:
-                self.fails[ip] = (count, until)
+                self.fails[ip] = (count, until, blocks)
+            self.recent = [x for x in self.recent if x > t - self.GLOBAL_WINDOW] + [t]
+            if len(self.recent) >= self.GLOBAL_LIMIT:
+                self.global_until = t + self.GLOBAL_BLOCK
+                self.recent = []
+            if len(self.fails) > 10000:  # xotira to'lmasin
+                self.fails = {k: v for k, v in self.fails.items() if v[1] > t}
 
     def ok(self, ip):
         with self.lock:
@@ -3976,7 +4070,7 @@ class Handler(BaseHTTPRequestHandler):
         raise ApiError(405 if path_matched else 404, "Topilmadi")
 
     def login(self, conn, data):
-        ip = self.client_address[0]
+        ip = client_ip(self)
         wait = LOGIN_GUARD.blocked(ip)
         if wait:
             raise ApiError(429, f"Ko'p noto'g'ri urinish. {wait} soniyadan keyin qayta urining")
@@ -4007,15 +4101,19 @@ class Handler(BaseHTTPRequestHandler):
             "INSERT INTO sessions (token, user_id, expires_at) VALUES (?,?,?)", (token, row["id"], expires)
         )
         cookie = f"sid={token}; Path=/; Max-Age={SESSION_DAYS * 86400}; HttpOnly; SameSite=Strict"
+        if TRUST_PROXY and self.headers.get("X-Forwarded-Proto") == "https":
+            cookie += "; Secure"
         user = public_user(row)
         agent = self.headers.get("User-Agent", "")
         device = ("Android ilova" if "EproPos" in agent else "iPhone/iPad" if re.search(r"iPhone|iPad", agent)
                   else "Android" if "Android" in agent else "Kompyuter")
         rec = entry("Tizimga kirdi", f"{user['full_name']} ({user['username']}) · {device}",
                     [["Xodim", user["full_name"]], ["Login", user["username"]], ["Qurilma", device],
-                     ["IP manzil", self.client_address[0]]])
+                     ["IP manzil", client_ip(self)]])
         write_journal(conn, user, "auth", rec, "login")
         self.telegram_out = telegram_message(conn, user, "auth", rec)
+        if TRUST_PROXY and str(data.get("pin") or "") == "1234":  # internetdagi serverda standart parol xavfli
+            user = dict(user, weak_pin=True)
         return 200, user, {"Set-Cookie": cookie}
 
 
@@ -4134,7 +4232,7 @@ def main():
     try:
         for attempt in range(40):  # yangilanishdan keyin: eski jarayon portni bo'shatguncha kutamiz
             try:
-                server = make_server(poll_bots=True)
+                server = make_server(host=HOST, poll_bots=True)
                 break
             except OSError:
                 if "--restart" not in sys.argv or attempt == 39:

@@ -123,6 +123,8 @@ def init(conn, role):
     if meta(conn, "node") is None:
         set_meta(conn, "node", random.randint(1, MAX_PHONE_NODE) if role == "phone" else 0)
     set_meta(conn, "role", role)
+    if meta(conn, "instance") is None:  # shu bazaning noyob raqami (o'ziga o'zi ulanmaslik uchun)
+        set_meta(conn, "instance", secrets.token_hex(8))
     conn.sync_node = int(meta(conn, "node"))
     create_triggers(conn)
 
@@ -377,3 +379,12 @@ def relay_lookup(code, timeout=15):
         if msg.get("event") == "message" and re.match(r"^https?://[^\s/]+$", text):
             url = text
     return url
+
+
+def adopt_all(conn, node):
+    """Kompyuter serverga ulanganda: bazadagi hamma yozuvlar (telefonlardan kelganlari ham) shu qurilmaniki
+    bo'lib, serverga yuboriladi va yangi serverdagi boshlang'ich yozuvlardan ustun turadi."""
+    stamp = conn.execute("SELECT strftime('%Y-%m-%dT%H:%M:%f', 'now')").fetchone()[0] + "#%04d" % node
+    conn.execute("UPDATE sync_changes SET origin = 'local', hlc = ?", (stamp,))
+    set_meta(conn, "node", node)
+    set_meta(conn, "role", "phone")

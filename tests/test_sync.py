@@ -171,6 +171,65 @@ class SyncTest(unittest.TestCase):
             proc.wait(5)
 
 
+class JoinServerTest(unittest.TestCase):
+    """Do'kondagi kompyuter (ma'lumotlari bilan) internetdagi yangi serverga ulanadi."""
+
+    def test_pc_joins_server(self):
+        tmp = tempfile.TemporaryDirectory()
+        server_proc, server_url = start("hub", tmp.name, "server", EPROPOS_NO_DEMO="1", EPROPOS_ADMIN_PIN="4321")
+        pc_proc, pc_url = start("hub", tmp.name, "pc", EPROPOS_CONF=os.path.join(tmp.name, "pc.conf"))
+        child = None
+        try:
+            pc = Client(pc_url).pin("1234")
+            _, p = pc.call("POST", "/api/products", {"name": "Kompyuter tovar", "price": 9000, "stock": 7})
+            self.assertEqual(pc.call("POST", "/api/sales", {"items": [{"product_id": p["id"], "qty": 2}],
+                                                             "method": "cash"})[0], 200)
+            server = Client(server_url).pin("4321")
+            self.assertEqual(server.call("GET", "/api/products")[1], [])  # yangi server bo'sh (namunasiz)
+            # o'ziga o'zi ulanmaydi
+            self.assertEqual(pc.call("POST", "/api/sync/join-server", {"url": pc_url, "pin": "1234"})[0], 400)
+            status, res = pc.call("POST", "/api/sync/join-server", {"url": server_url, "pin": "4321"})
+            self.assertEqual(status, 200, res)
+            # kompyuter qayta ishga tushib, server mijoziga aylanadi
+            hello = None
+            for _ in range(100):
+                time.sleep(0.2)
+                try:
+                    hello = Client(pc_url).call("GET", "/api/sync/hello")[1]
+                    if hello.get("role") == "phone":
+                        break
+                except OSError:
+                    pass
+            self.assertEqual(hello and hello.get("role"), "phone")
+            with open(os.path.join(ROOT, "epropos.pid")) as f:
+                child = int(f.read())
+            pc = Client(pc_url).pin("1234")
+            _, st = pc.call("POST", "/api/sync/now")
+            self.assertEqual((st["state"], st["via"]), ("ok", "internet"), st)
+            # kompyuterdagi ma'lumotlar serverda (kompyuter paroli ham)
+            server = Client(server_url).pin("1234")
+            srv_p = next(x for x in server.call("GET", "/api/products")[1] if x["name"] == "Kompyuter tovar")
+            self.assertEqual(srv_p["stock"], 5)
+            # serverda qo'shilgan narsa kompyuterga tushadi, kompyuterdagi yangi ID lar to'qnashmaydi
+            server.call("POST", "/api/products", {"name": "Server tovar", "price": 100})
+            _, c = pc.call("POST", "/api/categories", {"name": "Kompyuter kategoriya 2"})
+            self.assertGreaterEqual(c["id"], st.get("node", 1) * 10 ** 12 if "node" in st else 10 ** 12)
+            pc.call("POST", "/api/sync/now")
+            self.assertTrue(any(x["name"] == "Server tovar" for x in pc.call("GET", "/api/products")[1]))
+            self.assertTrue(any(x["name"] == "Kompyuter kategoriya 2" for x in server.call("GET", "/api/categories")[1]))
+        finally:
+            for proc in (server_proc, pc_proc):
+                proc.terminate()
+                proc.wait(5)
+            if child:
+                try:
+                    os.kill(child, 15)
+                except OSError:
+                    pass
+            time.sleep(0.3)
+            tmp.cleanup()
+
+
 # --- internet orqali: ntfy.sh o'rniga soxta e'lon kanali, cloudflared o'rniga soxta tunnel
 
 class FakeRelay(BaseHTTPRequestHandler):

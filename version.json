@@ -1,9 +1,10 @@
 {
-  "version": "1.6.1",
-  "date": "2026-09-26",
+  "version": "1.7.0",
+  "date": "2026-09-27",
   "notes": [
-    "Mobil ilova sahifasi: iPhone uchun Sideloadly usuli, manzilni nusxalash, AltStore bo'lmasa tushuntirish",
-    "iPhone ilovasi (AltStore orqali): internetsiz ishlaydi, kompyuter bilan sinxronlanadi",
-    "iPhone va telefon brauzerida ham kamera bilan shtrix-kod skanerlash (surat orqali)"
+    "Internetdagi serverga o'rnatish (Contabo va boshqa VPS): bitta buyruq, HTTPS",
+    "Kompyuterni serverga ulash: ma'lumotlar serverga ko'chadi, kompyuter oflayn ham ishlaydi",
+    "Kirish himoyasi kuchaytirildi (parolni taxmin qilishga qarshi)",
+    "Mobil ilova sahifasi: iPhone uchun Sideloadly usuli, manzilni nusxalash, AltStore bo'lmasa tushuntirish"
   ]
 }

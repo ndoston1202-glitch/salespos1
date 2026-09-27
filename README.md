@@ -92,6 +92,17 @@ Yuklab olish: **[EproPos.apk](https://github.com/ndoston1202-glitch/salespos1/re
 
 APK `android/` papkasidan GitHub Actions'da yig'iladi (Gradle + Chaquopy).
 
+## ☁️ Internetdagi server (Contabo va boshqa VPS)
+Server (Ubuntu/Debian) terminalida bitta buyruq:
+```
+curl -fsSL https://raw.githubusercontent.com/ndoston1202-glitch/salespos1/main/deploy/install.sh | bash
+```
+- Natija: `https://<IP>.sslip.io` manzili (bepul HTTPS), administrator paroli ekranga chiqadi — yozib oling
+- Do'kondagi kompyuter: **Sozlamalar → Sinxronlash → Serverga ulash** (server manzili + serverdagi parol).
+  Kompyuterdagi ma'lumotlar serverga ko'chadi, kompyuter internetsiz ham ishlayveradi va server bilan sinxronlanadi
+- Telefon/iPad: brauzerda server manzilini oching yoki ilovada **Sinxronlash** → server manzili
+- Yangilash: dastur ichida **Sozlamalar → Yangilash** (yoki buyruqni qayta ishga tushirish)
+
 ## 🍎 iPhone ilova
 - Telefonda brauzerda kompyuter manzilini oching (masalan `http://192.168.1.10:8100`) → **Sozlamalar → Mobil ilova**:
   qurilmangizga mos ilova (Android APK yoki iPhone) taklif qilinadi. Kompyuterda shu sahifada QR kod ham bor

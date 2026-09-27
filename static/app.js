@@ -447,6 +447,10 @@ function renderLogin() {
     try {
       state.user = await api("POST", "/api/login", { pin });
       await loadSettings();
+      if (state.user.weak_pin) {
+        setTimeout(() => alert("Diqqat: dastur internetdagi serverda ishlayapti, 1234 paroli xavfli!\n" +
+          "Xodimlar bo'limida parolingizni boshqa 4 raqamga almashtiring."), 500);
+      }
       document.removeEventListener("keydown", state.pinKeys);
       if (!location.hash || location.hash === "#/") location.hash = defaultRoute();
       router();
@@ -3380,6 +3384,15 @@ function viewSyncHub(st) {
           ${st.urls.length ? st.urls.map((u) => `<code>${esc(u)}</code>`).join(" ") : "<i>kompyuter tarmoqqa ulanmagan</i>"})</li>
         <li>Shu yerdagi administrator parolini kiriting</li>
       </ol>
+      <h3>☁️ Internetdagi serverga ulash</h3>
+      <p class="muted">Serveringiz bo'lsa (masalan Contabo): shu kompyuterdagi barcha ma'lumotlar serverga ko'chadi,
+        kompyuter esa internetsiz ham ishlashda davom etadi va server bilan o'zi sinxronlanadi. Telefonlar va iPad
+        serverga istalgan joydan ulanadi.</p>
+      <form id="join-form" class="sync-connect">
+        <label><span>Server manzili</span><input name="url" placeholder="https://123-45-67-89.sslip.io" required autocomplete="off" autocapitalize="off"></label>
+        <label><span>Serverdagi administrator paroli</span><input name="pin" type="password" inputmode="numeric" maxlength="4" required></label>
+        <button class="btn primary">☁️ Serverga ulash</button>
+      </form>
       <h3>🌐 Internet orqali (boshqa tarmoqda)</h3>
       <div id="internet-box">${internetBox(st.internet)}</div>
       <h3>Ulangan telefonlar</h3>
@@ -3391,6 +3404,23 @@ function viewSyncHub(st) {
           <td class="right"><button class="btn small danger" data-rm="${d.id}">Uzish</button></td></tr>`).join("")}</tbody>
       </table>` : `<p class="muted">Hali telefon ulanmagan</p>`}
     </div>`);
+  $("#join-form", view).addEventListener("submit", safe(async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    if (!confirm("Kompyuter serverga ulansinmi? Ma'lumotlar serverga ko'chadi, shu kompyuterga ulangan telefonlarni " +
+      "keyin serverga qayta ulash kerak bo'ladi. Dastur bir necha soniyaga qayta ishga tushadi.")) return;
+    await api("POST", "/api/sync/join-server", { url: f.url.value, pin: f.pin.value });
+    f.innerHTML = `<div class="notice">⏳ Ulandi! Dastur qayta ishga tushmoqda, ma'lumotlar serverga yuborilmoqda...</div>`;
+    const started = Date.now();
+    const tick = async () => {
+      try {
+        const info = await (await fetch("/api/sync/hello", { cache: "no-store" })).json();
+        if (info.role === "phone") { location.hash = "#/settings/sync"; location.reload(); return; }
+      } catch { /* qayta ishga tushmoqda */ }
+      if (Date.now() - started < 90000) setTimeout(tick, 1500);
+    };
+    setTimeout(tick, 2500);
+  }));
   const bindInternet = () => {
     const btn = $("#internet-toggle", view);
     if (btn) btn.addEventListener("click", safe(async () => {
