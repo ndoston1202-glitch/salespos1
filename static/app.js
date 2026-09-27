@@ -74,6 +74,10 @@ async function api(method, url, body) {
     body: body ? JSON.stringify(body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
+  if (res.status === 402) {  // obuna muddati tugagan
+    if (state.settings.license) state.settings.license.state = "expired";
+    if (location.hash !== "#/license") location.hash = "#/license";
+  }
   if (res.status === 401 && url !== "/api/login") {
     state.user = null;
     renderLogin();
@@ -574,6 +578,7 @@ const SETTINGS_TABS = [
   { perm: "settings", href: "#/settings/sync", icon: "transfer", name: "Sinxronlash" },
   { perm: "settings", href: "#/settings/update", icon: "download", name: "Yangilash" },
   { perm: "settings", href: "#/settings/mobile", icon: "phone", name: "Mobil ilova" },
+  { perm: "settings", href: "#/license", icon: "check", name: "Obuna" },
 ];
 
 function visibleNav() {
@@ -669,6 +674,7 @@ function layout(content) {
           </div>
         </header>
         <main id="view">
+          ${licenseBanner()}
           ${inSettings ? `<nav class="settings-tabs">${tabs.map((t) => `
             <a href="${t.href}" class="${t.href === hash ? "active" : ""}">${icon(t.icon)}<span>${t.name}</span></a>`).join("")}</nav>` : ""}
           ${content}
@@ -3610,6 +3616,92 @@ async function viewUpdate() {
   await load(false);
 }
 
+// ------------------------------------------------------------ obuna (litsenziya)
+
+function licenseLocked() {
+  return !!(state.settings.license && state.settings.license.state === "expired");
+}
+
+function licenseBanner() {
+  const lic = state.settings.license;
+  if (!lic || location.hash === "#/license") return "";
+  const soon = lic.state === "warning" || lic.state === "grace";
+  if (!soon) return "";
+  const text = lic.state === "grace"
+    ? `Obuna muddati tugadi! ${lic.grace_days + lic.days_left} kundan keyin dastur bloklanadi.`
+    : lic.days_left === 0 ? "Obuna muddati bugun tugaydi." : `Obuna muddati ${lic.days_left} kundan keyin tugaydi.`;
+  return `<a class="license-banner ${lic.state}" href="#/license">⚠️ ${esc(text)} ${lic.trial ? "(sinov muddati)" : ""}
+    <b>To'lov qilib, faollashtiring →</b></a>`;
+}
+
+function licenseHtml(lic) {
+  const labels = { active: ["ok", "Faol"], warning: ["warn", "Tugashiga oz qoldi"], grace: ["off", "Muddati tugadi"],
+    expired: ["off", "Bloklangan"] };
+  const [cls, label] = labels[lic.state] || ["", lic.state];
+  const contact = lic.vendor || lic.phone
+    ? `<p>To'lov va faollashtirish uchun: <b>${esc(lic.vendor)}</b> ${lic.phone ? `<a href="tel:${esc(lic.phone.replace(/\s/g, ""))}">${esc(lic.phone)}</a>` : ""}</p>`
+    : `<p class="muted">To'lov va faollashtirish uchun dasturni o'rnatib bergan sotuvchiga murojaat qiling.</p>`;
+  return `<div class="sync-card">
+      <div><small class="muted">Obuna ${lic.trial ? "(sinov muddati)" : ""}</small>
+        <b>${esc(lic.until)} gacha</b>
+        <span class="muted">${lic.days_left >= 0 ? `${lic.days_left} kun qoldi` : `${-lic.days_left} kun oldin tugagan`}</span></div>
+      <span class="badge ${cls}">${label}</span>
+    </div>
+    <div class="sync-facts">
+      <div><small class="muted">Do'kon ID (sotuvchiga ayting)</small><b class="shop-id">${esc(lic.shop_id)}</b>
+        <button type="button" class="btn small copy-btn" data-copy="${esc(lic.shop_id)}">Nusxa olish</button></div>
+      <div>${contact}</div>
+    </div>
+    <form id="lic-form" class="sync-connect">
+      <label><span>Faollashtirish kodi</span>
+        <textarea name="code" rows="3" required placeholder="EP1-..." autocomplete="off" autocapitalize="off" spellcheck="false"></textarea></label>
+      <button class="btn primary big">🔑 Faollashtirish</button>
+    </form>`;
+}
+
+async function viewLicense() {
+  const lic = await api("GET", "/api/license");
+  state.settings.license = lic;
+  const locked = lic.state === "expired";
+  const inner = `<div class="panel sync-panel" style="max-width:640px">
+      <h2>${locked ? "🔒 Obuna muddati tugagan" : "🔑 Obuna"}</h2>
+      ${locked ? `<p>Dastur vaqtincha bloklandi — ma'lumotlaringiz saqlanib turibdi. Obuna to'lovini qilib,
+        sotuvchi yuborgan <b>faollashtirish kodini</b> kiriting.</p>` : ""}
+      ${licenseHtml(lic)}
+    </div>`;
+  let view;
+  if (locked) {  // menyusiz sahifa: faqat obuna va chiqish
+    $("#app").innerHTML = `<div class="lock-page"><img src="/img/logo.png" alt="EproPos" class="lock-logo">${inner}
+      <button class="btn" id="lock-logout">${icon("logout")} Chiqish</button></div>`;
+    view = $("#app");
+    $("#lock-logout", view).addEventListener("click", logout);
+  } else {
+    view = layout(inner);
+  }
+  $$(".copy-btn", view).forEach((b) => b.addEventListener("click", () => copyText(b.dataset.copy)));
+  $("#lic-form", view).addEventListener("submit", safe(async (e) => {
+    e.preventDefault();
+    const res = await api("POST", "/api/license", { code: e.target.code.value });
+    state.settings.license = res;
+    toast(`Faollashtirildi ✅ ${res.until} gacha`);
+    go(defaultRoute());
+  }));
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const t = document.createElement("textarea");
+    t.value = text;
+    document.body.appendChild(t);
+    t.select();
+    document.execCommand("copy");
+    t.remove();
+  }
+  toast("Nusxa olindi ✅");
+}
+
 // ------------------------------------------------------------ mobil ilovani yuklab olish
 
 const IS_IOS = /iPhone|iPad|iPod/i.test(navigator.userAgent)
@@ -3801,6 +3893,7 @@ const routes = [
   [/^#\/settings\/sync$/, viewSync, ["settings"]],
   [/^#\/settings\/update$/, viewUpdate, ["settings"]],
   [/^#\/settings\/mobile$/, viewMobileApp, ["settings"]],
+  [/^#\/license$/, viewLicense, null],
   [/^#\/journal$/, viewJournal, ["journal"]],
   [/^#\/integrations$/, viewIntegrations, ["integrations"]],
   [/^#\/integrations\/telegram$/, viewTelegram, ["integrations"]],
@@ -3817,6 +3910,7 @@ async function router() {
     hook();
   }
   const hash = location.hash.split("?")[0];
+  if (licenseLocked() && hash !== "#/license") return go("#/license");  // obuna tugagan - faqat obuna sahifasi
   for (const [re, view, perms] of routes) {
     const m = hash.match(re);
     if (!m) continue;

@@ -1,0 +1,32 @@
+body { background: var(--bg); }
+.adm-top { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 12px 20px; background: #0f1a14; }
+.adm-logo { height: 38px; }
+.adm-tag { color: #7ae86a; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; font-size: 13px;
+  border: 1px solid #3ecd56; border-radius: 6px; padding: 2px 8px; }
+#adm-nav { display: flex; gap: 6px; margin-left: auto; flex-wrap: wrap; }
+#adm-nav a { color: #cfe9d3; text-decoration: none; padding: 8px 14px; border-radius: 8px; }
+#adm-nav a.active, #adm-nav a:hover { background: #1f3027; color: #fff; }
+.adm-main { max-width: 1150px; margin: 0 auto; padding: 20px 16px 60px; }
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 18px; }
+.stat { background: #fff; border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
+.stat small { color: var(--muted); display: block; }
+.stat b { font-size: 24px; }
+.stat.warn b { color: #b26a00; }
+.stat.bad b { color: var(--danger); }
+.toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.toolbar input { flex: 1; min-width: 200px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; }
+.clients tr { cursor: pointer; }
+.clients tr:hover td { background: #f6fcf7; }
+.badge.new { background: #eceff1; color: #455a64; }
+.code-box { width: 100%; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; padding: 10px;
+  border: 2px solid var(--primary); border-radius: 8px; background: #f6fcf7; resize: none; }
+.adm-form { display: grid; gap: 10px; }
+.adm-form label { display: flex; flex-direction: column; gap: 4px; }
+.adm-form input, .adm-form select, .adm-form textarea { padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; font: inherit; }
+.row-btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.key-box { word-break: break-all; font-family: ui-monospace, Menlo, Consolas, monospace; background: #f6fcf7;
+  padding: 10px; border-radius: 8px; border: 1px solid var(--line); }
+.mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
+#toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 2000; }
+#toast div { background: #16241c; color: #fff; padding: 10px 16px; border-radius: 10px; margin-top: 8px; }
+#toast div.err { background: #c0392b; }

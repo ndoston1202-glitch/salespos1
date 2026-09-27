@@ -25,12 +25,13 @@ import time
 import urllib.request
 import webbrowser
 import zipfile
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 from xml.etree import ElementTree
 
+import obuna
 import sync
 import telegram
 from tunnel import Tunnel
@@ -464,6 +465,11 @@ def init_db(conn):
                 (i, name, direction, now()),
             )
     conn.executemany("UPDATE finance_types SET is_adjust = 1 WHERE name = ? AND is_adjust = 0", [(n,) for n in ADJUST_TYPES.values()])
+    if ROLE == "hub" and not conn.execute("SELECT 1 FROM settings WHERE key = 'shop_id'").fetchone():
+        # do'kon ID - obuna shu raqamga beriladi; telefonlarga sinxronlash orqali o'tadi
+        conn.execute("INSERT INTO settings (key, value) VALUES ('shop_id', ?)", (local_shop_id(conn),))
+    if sync.meta(conn, "first_run") is None:
+        sync.set_meta(conn, "first_run", today().isoformat())
     sync.backfill(conn)
     conn.commit()
 
@@ -533,6 +539,100 @@ RECEIPT_DEFAULTS = {
 }
 DEFAULT_PIN = os.environ.get("EPROPOS_ADMIN_PIN") or "1234"  # serverda o'rnatishda tasodifiy beriladi
 PIN_LENGTH = 4
+
+
+# --- obuna (litsenziya): sotuvchi admin panelda kod beradi, muddat tugasa dastur bloklanadi
+
+VENDOR_KEY = ""  # sotuvchining ochiq kaliti (admin panel -> Sozlamalar). Bo'sh bo'lsa - birinchi faollashtirishdagi kalit
+TRIAL_DAYS, WARN_DAYS, GRACE_DAYS = 14, 5, 3
+LICENSE_FREE = ("/api/license", "/api/settings", "/api/logout", "/api/update", "/api/sync/", "/api/me")
+_license_cache = {}
+
+
+def today():
+    """Bugungi sana (testlar uchun EPROPOS_TODAY bilan almashtiriladi)."""
+    fake = os.environ.get("EPROPOS_TODAY")
+    return date.fromisoformat(fake) if fake else date.today()
+
+
+def local_shop_id(conn):
+    return obuna.normalize_shop_id(sync.meta(conn, "instance")[:12])
+
+
+def setting_value(conn, key):
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else None
+
+
+def shop_id(conn):
+    """Kompyuter va unga ulangan telefonlar - bitta do'kon ID (kompyuterniki); alohida telefon - o'ziniki."""
+    return setting_value(conn, "shop_id") or local_shop_id(conn)
+
+
+def license_store(conn):
+    """Obuna do'kon bo'yicha (sinxronlanadi); kompyuterga ulanmagan telefonda - faqat o'zida."""
+    return "settings" if setting_value(conn, "shop_id") else "meta"
+
+
+def license_get(conn, key):
+    return setting_value(conn, key) if license_store(conn) == "settings" else sync.meta(conn, key)
+
+
+def license_set(conn, key, value):
+    if license_store(conn) == "settings":
+        conn.execute("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                     (key, value))
+    else:
+        sync.set_meta(conn, key, value)
+
+
+def trusted_vendor_key(conn):
+    text = VENDOR_KEY or license_get(conn, "vendor_key")
+    return obuna.key_from_text(text) if text else None
+
+
+def checked_today(conn):
+    """Soatni orqaga qo'yib obunani uzaytirib bo'lmaydi: ko'rilgan eng katta sana eslab qolinadi."""
+    real = today()
+    seen = sync.meta(conn, "clock_max")
+    seen = date.fromisoformat(seen) if seen else None
+    if not seen or (seen < real <= seen + timedelta(days=40)):
+        sync.set_meta(conn, "clock_max", real.isoformat())  # juda katta sakrash (xato soat) eslab qolinmaydi
+        return real
+    return max(real, seen)
+
+
+def license_state(conn):
+    sid = shop_id(conn)
+    code = license_get(conn, "license")
+    day = checked_today(conn)
+    key = (sid, code, day, VENDOR_KEY)
+    if key in _license_cache:
+        return dict(_license_cache[key])
+    info, trial = None, False
+    if code:
+        try:
+            info = obuna.read_code(code, trusted_vendor_key(conn))
+            if info["s"] != sid:
+                info = None
+        except ValueError:
+            info = None
+    if info:
+        until = date.fromisoformat(info["u"])
+    else:  # hali faollashtirilmagan - sinov muddati
+        trial = True
+        first = sync.meta(conn, "first_run")
+        until = (date.fromisoformat(first) if first else day) + timedelta(days=TRIAL_DAYS)
+    left = (until - day).days
+    state = ("active" if left > WARN_DAYS else "warning" if left >= 0
+             else "grace" if left >= -GRACE_DAYS else "expired")
+    res = {"state": state, "until": until.isoformat(), "days_left": left, "trial": trial, "shop_id": sid,
+           "vendor": (info or {}).get("n") or license_get(conn, "vendor_name") or "",
+           "phone": (info or {}).get("p") or license_get(conn, "vendor_phone") or "",
+           "grace_days": GRACE_DAYS}
+    _license_cache.clear()
+    _license_cache[key] = res
+    return dict(res)
 
 
 def get_settings(conn):
@@ -808,7 +908,7 @@ def delete_product(conn, user, params, data, query):
 
 @route("GET", "/api/settings")
 def read_settings(conn, user, params, data, query):
-    return dict(get_settings(conn), role=ROLE, platform=PLATFORM, native=sorted(NATIVE),
+    return dict(get_settings(conn), role=ROLE, platform=PLATFORM, native=sorted(NATIVE), license=license_state(conn),
                 apps={"apk": APK_URL, "ipa": IOS_RELEASE + "/EproPos.ipa", "altstore": ALTSTORE_SOURCE})
 
 
@@ -3643,6 +3743,31 @@ def sync_internet(conn, user, params, data, query):
     return internet.status()
 
 
+@route("GET", "/api/license")
+def license_read(conn, user, params, data, query):
+    return license_state(conn)
+
+
+@route("POST", "/api/license")
+def license_activate(conn, user, params, data, query):
+    """Sotuvchi yuborgan faollashtirish kodini kiritish (har qanday xodim kirita oladi - kod imzolangan)."""
+    try:
+        info = obuna.read_code(data.get("code"), trusted_vendor_key(conn))
+    except ValueError as e:
+        raise ApiError(400, str(e))
+    if info["s"] != shop_id(conn):
+        raise ApiError(400, f"Bu kod boshqa do'kon uchun ({info['s']}). Shu do'kon ID: {shop_id(conn)}")
+    if date.fromisoformat(info["u"]) < checked_today(conn):
+        raise ApiError(400, f"Bu kodning muddati o'tgan ({info['u']})")
+    license_set(conn, "license", re.sub(r"\s+", "", data["code"]))
+    if not license_get(conn, "vendor_key"):
+        license_set(conn, "vendor_key", info["k"])  # birinchi faollashtirish - sotuvchi kaliti eslab qolinadi
+    license_set(conn, "vendor_name", info.get("n") or "")
+    license_set(conn, "vendor_phone", info.get("p") or "")
+    write_journal(conn, user, "settings", entry("Obuna faollashtirildi", f"{info['u']} gacha"), "license")
+    return license_state(conn)
+
+
 # --- dastur ichida yangilash
 
 UPDATE_REPO = os.environ.get("EPROPOS_UPDATE_REPO", "ndoston1202-glitch/salespos1")
@@ -4051,6 +4176,8 @@ class Handler(BaseHTTPRequestHandler):
         user = self.current_user(conn)
         if not user:
             raise ApiError(401, "Tizimga kiring")
+        if not path.startswith(LICENSE_FREE) and license_state(conn)["state"] == "expired":
+            raise ApiError(402, "Obuna muddati tugagan. Dasturni faollashtirish uchun sotuvchiga murojaat qiling")
         path_matched = False
         for r_method, pattern, perms, fn in ROUTES:
             m = pattern.match(path)

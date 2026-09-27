@@ -92,6 +92,17 @@ Yuklab olish: **[EproPos.apk](https://github.com/ndoston1202-glitch/salespos1/re
 
 APK `android/` papkasidan GitHub Actions'da yig'iladi (Gradle + Chaquopy).
 
+## 🔑 Obuna va sotuvchi paneli (EproPos Admin)
+EproPos'ni biznes egalariga oylik obuna bilan sotish uchun.
+- **ADMIN_PANEL.bat** — sotuvchi paneli (faqat sizning kompyuteringizda): mijozlar, oylik narx, to'lovlar,
+  obuna muddatlari, faollashtirish kodlari. Kodni "Telegram'da yuborish" tugmasi bilan mijozga jo'natasiz
+- Mijozning EproPos'ida: **Sozlamalar → Obuna** — Do'kon ID (sizga aytadi) va kod kiritish joyi
+- Yangi o'rnatilgan dastur **14 kun** sinov muddatida ishlaydi. Muddat tugashiga 5 kun qolganda ogohlantirish chiqadi,
+  tugagach 3 kun imtiyoz, keyin dastur bloklanadi (ma'lumotlar saqlanadi) — kod kiritilsa darhol ochiladi
+- Kompyuter va unga ulangan telefonlar — bitta obuna (bitta Do'kon ID)
+- Kodlar raqamli imzo (Ed25519) bilan himoyalangan: ularni faqat admin paneldagi maxfiy kalit yaratadi.
+  Maxfiy kalit va ma'lumotlar: `%APPDATA%\EproPosAdmin` — **Sozlamalar → Zaxira nusxa** ni albatta saqlang
+
 ## ☁️ Internetdagi server (Contabo va boshqa VPS)
 Server (Ubuntu/Debian) terminalida bitta buyruq:
 ```

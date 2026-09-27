@@ -18,7 +18,7 @@ from test_api import Client  # noqa: E402
 from test_sync import free_port  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-APP_FILES = ["server.py", "sync.py", "telegram.py", "tunnel.py", "xlsx.py", "version.json", "static"]
+APP_FILES = ["server.py", "sync.py", "obuna.py", "telegram.py", "tunnel.py", "xlsx.py", "version.json", "static"]
 
 
 def make_zip(src, version):

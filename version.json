@@ -1,10 +1,10 @@
 {
-  "version": "1.7.1",
+  "version": "1.8.0",
   "date": "2026-09-27",
   "notes": [
+    "Obuna: 14 kunlik sinov, muddat tugaganda bloklash, faollashtirish kodi (Sozlamalar → Obuna)",
+    "Sotuvchi uchun EproPos Admin paneli (ADMIN_PANEL.bat): mijozlar, to'lovlar, kodlar",
     "Mobil ilova: serverga ulangan kompyuterda server manzili va QR kod (iPad/iPhone istalgan joydan)",
-    "Internetdagi serverga o'rnatish (Contabo va boshqa VPS): bitta buyruq, HTTPS",
-    "Kompyuterni serverga ulash: ma'lumotlar serverga ko'chadi, kompyuter oflayn ham ishlaydi",
-    "Kirish himoyasi kuchaytirildi (parolni taxmin qilishga qarshi)"
+    "Internetdagi serverga o'rnatish (Contabo va boshqa VPS): bitta buyruq, HTTPS"
   ]
 }

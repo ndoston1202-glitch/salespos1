@@ -32,7 +32,7 @@ jobs:
         run: |
           CORE=ios/src/epropos/core
           mkdir -p "$CORE"
-          cp server.py sync.py telegram.py tunnel.py xlsx.py version.json android/app/src/main/python/mobile_main.py "$CORE/"
+          cp server.py sync.py obuna.py telegram.py tunnel.py xlsx.py version.json android/app/src/main/python/mobile_main.py "$CORE/"
           cp -R static "$CORE/static"
           VERSION=$(python -c "import json; print(json.load(open('version.json'))['version'])")
           sed -i '' "s/^version = .*/version = \"$VERSION\"/" ios/pyproject.toml
@@ -57,7 +57,7 @@ jobs:
           ls -la EproPos.ipa
           # ilova ichida dastur, sahifalar va Python borligini tekshiramiz
           unzip -l EproPos.ipa > contents.txt
-          for f in "core/server.py" "core/sync.py" "core/mobile_main.py" "core/static/index.html" "core/static/vendor/zxing.min.js" "Python.framework" "toga_iOS"; do
+          for f in "core/server.py" "core/sync.py" "core/obuna.py" "core/mobile_main.py" "core/static/index.html" "core/static/vendor/zxing.min.js" "Python.framework" "toga_iOS"; do
             grep -q "$f" contents.txt || { echo "IPA ichida yo'q: $f"; exit 1; }
           done
           echo "IPA tekshirildi"
