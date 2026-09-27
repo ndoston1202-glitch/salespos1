@@ -97,7 +97,7 @@ APK `android/` papkasidan GitHub Actions'da yig'iladi (Gradle + Chaquopy).
 
 ## 🔑 Obuna
 EproPos oylik obuna bilan ishlaydi. Obunalar alohida **Obuna Admin** panelida boshqariladi
-(alohida repozitoriya: `ndoston1202-glitch/obuna-admin`, dastur kodi: `epropos`).
+(alohida repozitoriya: `ndoston1202-glitch/ADMINPANEL`, dastur kodi: `epropos`).
 - Mijozning EproPos'ida: **Sozlamalar → Obuna** — Do'kon ID (sotuvchiga aytiladi) va faollashtirish kodi kiritiladigan joy
 - Yangi o'rnatilgan dastur **14 kun** sinov muddatida ishlaydi. Muddat tugashiga 5 kun qolganda ogohlantirish chiqadi,
   tugagach 3 kun imtiyoz, keyin dastur bloklanadi (ma'lumotlar saqlanadi) — kod kiritilsa darhol ochiladi
