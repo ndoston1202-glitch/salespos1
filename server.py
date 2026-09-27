@@ -3497,8 +3497,16 @@ def list_integrations(conn, user, params, data, query):
             {"key": "tg_app", "enabled": a_enabled, "configured": bool(a_cfg.get("token"))}]
 
 
+PUBLIC_URL = os.environ.get("EPROPOS_PUBLIC_URL")  # serverda (Caddy, HTTPS): doimiy manzil - tunnel kerak emas
+
+
 def tg_app_public(conn):
     enabled, cfg = get_integration(conn, "tg_app")
+    if PUBLIC_URL:
+        return {"enabled": enabled, "token_set": bool(cfg.get("token")), "token_hint": mask_token(cfg.get("token")),
+                "bot": cfg.get("bot"), "hub": ROLE == "hub", "internet": {"state": "online", "url": PUBLIC_URL},
+                "menu_ok": bool(enabled and cfg.get("menu_url") == PUBLIC_URL), "menu_error": cfg.get("menu_error"),
+                "linked": rows(conn.execute("SELECT id, full_name, tg_user_id FROM users WHERE tg_user_id IS NOT NULL ORDER BY full_name"))}
     net = internet.status() if internet else None
     return {"enabled": enabled, "token_set": bool(cfg.get("token")), "token_hint": mask_token(cfg.get("token")),
             "bot": cfg.get("bot"), "internet": net, "hub": ROLE == "hub",
@@ -3533,9 +3541,16 @@ def save_tg_app(conn, user, params, data, query):
             new.update(token=token, bot={"username": me.get("username"), "name": me.get("first_name")})
         if enabled and not new.get("token"):
             raise ApiError(400, "Avval bot tokenini kiriting")
+        if PUBLIC_URL:  # serverda: bot tugmasi serverning doimiy manziliga
+            try:
+                telegram.call(new["token"], "setChatMenuButton", {"menu_button": json.dumps(
+                    {"type": "web_app", "text": "EproPos", "web_app": {"url": PUBLIC_URL + "/"}} if enabled else {"type": "default"})})
+                new.update(menu_url=PUBLIC_URL if enabled else None, menu_error=None)
+            except telegram.TelegramError as e:
+                new.update(menu_url=None, menu_error=str(e))
         with db_lock:
             save_integration(conn, "tg_app", enabled, new)
-            if enabled and not internet.enabled:
+            if enabled and not internet.enabled and not PUBLIC_URL:
                 internet.enable(conn)  # ilova tunnel orqali ochiladi
             write_journal(conn, user, "settings", entry("Telegram ilova " + ("yoqildi" if enabled else "o'chirildi"),
                           "@" + str((new.get("bot") or {}).get("username") or "")), "tg_app")
