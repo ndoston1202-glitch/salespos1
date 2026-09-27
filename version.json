@@ -1,10 +1,10 @@
 {
-  "version": "1.9.0",
+  "version": "1.10.0",
   "date": "2026-09-27",
   "notes": [
+    "Telegram ilova: EproPos Telegram ichida (iPhone va Android), istalgan internetdan, Wi-Fi shart emas — Integratsiyalar → Telegram ilova",
     "Yangi Hisobotlar bo'limi: Savdo, CRM, Ombor, Moliya bo'yicha 20 ta hisobot",
     "Har bir hisobotda filtrlar: sana, soat oralig'i, xodim, mijoz, kategoriya, to'lov turi; natija kartalari, diagramma, Excel",
-    "Obuna Admin alohida dasturga ajratildi; faqat EproPos uchun berilgan kodlar qabul qilinadi",
-    "Admin panel: yangi mijozga demo muddatini o'zingiz belgilaysiz"
+    "Obuna Admin alohida dasturga ajratildi; faqat EproPos uchun berilgan kodlar qabul qilinadi"
   ]
 }

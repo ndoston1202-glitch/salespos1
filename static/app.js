@@ -406,8 +406,9 @@ function renderLogin() {
         <p>Kassa, ombor, mijozlar va moliyani yagona tizimda boshqaring</p>
       </section>
       <div class="pin-card" id="pin-card">
-        <h2>Xush kelibsiz</h2>
-        <p class="pin-sub">Parolingizni kiriting</p>
+        <h2>${state.tgInit ? `Salom${state.tgName ? ", " + esc(state.tgName) : ""}!` : "Xush kelibsiz"}</h2>
+        <p class="pin-sub">${state.tgInit ? "Telegram akkauntingizni bog'lash uchun parolingizni bir marta kiriting"
+          : "Parolingizni kiriting"}</p>
         <div class="pin-dots" id="pin-dots">${"<i></i>".repeat(PIN_LENGTH)}</div>
         <div class="pin-error" id="login-error"></div>
         <div class="pin-pad">
@@ -449,7 +450,9 @@ function renderLogin() {
     if (pin.length < PIN_LENGTH) return;
     busy = true;
     try {
-      state.user = await api("POST", "/api/login", { pin });
+      // Telegram ilovada: PIN bir marta - Telegram akkaunti xodimga bog'lanadi
+      state.user = state.tgInit ? await api("POST", "/api/tg/auth", { init_data: state.tgInit, pin })
+        : await api("POST", "/api/login", { pin });
       await loadSettings();
       if (state.user.weak_pin) {
         setTimeout(() => alert("Diqqat: dastur internetdagi serverda ishlayapti, 1234 paroli xavfli!\n" +
@@ -603,6 +606,7 @@ function pageTrail(hash) {
   if (hash === "#/purchases/new") return ["Ombor", "Yangi kirim"];
   if (hash === "#/integrations/telegram") return ["Integratsiyalar", "Telegram bot"];
   if (hash === "#/integrations/customer-bot") return ["Integratsiyalar", "Mijozlar boti"];
+  if (hash === "#/integrations/tg-app") return ["Integratsiyalar", "Telegram ilova"];
   for (const item of NAV) {
     if (item.href === hash) return [item.name];
     for (const c of item.children || []) if (c.href === hash) return [item.name, c.name];
@@ -3130,6 +3134,8 @@ const INTEGRATIONS = [
     text: "Xodimlar uchun: sotuv, kirim-chiqim, qarz va boshqa amallar haqida Telegram'ga xabar keladi." },
   { key: "customer_bot", icon: "crm", name: "Mijozlar boti", href: "#/integrations/customer-bot",
     text: "Mijozlar uchun: xarid cheki, qarz balansi va siz yuborgan xabarlar Telegram'da." },
+  { key: "tg_app", icon: "phone", name: "Telegram ilova", href: "#/integrations/tg-app",
+    text: "Xodimlar uchun: EproPos Telegram ichida - iPhone va Android'da istalgan internetdan, Wi-Fi shart emas." },
 ];
 
 async function viewIntegrations() {
@@ -3153,6 +3159,77 @@ async function viewIntegrations() {
           </${tag}>`;
       }).join("")}
     </div>`);
+}
+
+// Telegram ilova (Mini App): kompyuterdagi EproPos tunnel orqali Telegram ichida ochiladi
+async function viewTgApp(cfgArg) {
+  if (state.leaveHook) { state.leaveHook(); state.leaveHook = null; }
+  const cfg = cfgArg || await api("GET", "/api/integrations/tg_app");
+  const net = cfg.internet || {};
+  const ready = cfg.enabled && net.state === "online" && cfg.menu_ok;
+  const bot = cfg.bot ? `@${esc(cfg.bot.username)}` : "bot";
+  let body;
+  if (!cfg.hub) {
+    body = `<div class="notice">Telegram ilova faqat asosiy kompyuterdagi EproPos'da yoqiladi.</div>`;
+  } else if (!cfg.token_set) {
+    body = `<section class="panel tg-card">
+        <div class="tg-hero">${icon("telegram")}</div>
+        <h3>1. Yangi bot yarating</h3>
+        <p class="muted">Telegram'da <a href="https://t.me/BotFather" target="_blank" rel="noopener"><b>@BotFather</b></a> →
+          <b>/newbot</b> → nomini bering (masalan "Do'konim kassa"). U bergan <b>tokenni</b> shu yerga qo'ying.
+          Xodimlar jurnali botidan <b>alohida</b> bot bo'lgani yaxshi.</p>
+        <form id="ta-form" class="row-input">
+          <input id="ta-token" autocomplete="off" spellcheck="false" placeholder="123456789:AAH..." required>
+          <button class="btn primary">Ulash va yoqish</button>
+        </form></section>`;
+  } else {
+    body = `<section class="panel tg-card">
+        <div class="tg-connected">
+          <span class="tg-hero small">${icon("telegram")}</span>
+          <div><b>${bot}</b><small class="muted">${ready ? "Ishlayapti ✅" : cfg.enabled ? "Ulanmoqda..." : "O'chirilgan"}</small></div>
+          <label class="tg-switch"><input type="checkbox" id="ta-enabled" ${cfg.enabled ? "checked" : ""}><span class="slider"></span></label>
+        </div>
+        ${cfg.enabled && net.state !== "online" ? `<div class="notice">⏳ Kompyuter internetga chiqmoqda (${esc(net.state || "")})...
+          ${net.error ? `<br><span class="error">${esc(net.error)}</span>` : ""}</div>` : ""}
+        ${cfg.menu_error ? `<div class="notice error-notice">⚠️ ${esc(cfg.menu_error)}</div>` : ""}
+        <h4>Xodimlar qanday foydalanadi</h4>
+        <ol class="help-list">
+          <li>Telegram'da ${cfg.bot ? `<a href="https://t.me/${esc(cfg.bot.username)}" target="_blank" rel="noopener"><b>${bot}</b></a>` : bot} ni oching</li>
+          <li>Pastdagi <b>"EproPos"</b> tugmasini bosing — dastur Telegram ichida ochiladi</li>
+          <li>Birinchi marta o'z <b>parolini (PIN)</b> kiritadi — keyin har safar avtomatik kiradi</li>
+        </ol>
+        <p class="muted">iPhone va Android'da, istalgan Wi-Fi yoki mobil internetdan ishlaydi. Ma'lumotlar shu kompyuterda —
+          hamma o'zgarish darhol hammaga ko'rinadi. <b>Kompyuterda EproPos ochiq va internet bo'lishi kerak.</b>
+          Internetdan oddiy parol bilan kirib bo'lmaydi — faqat Telegram orqali (xavfsizlik uchun).</p>
+        <h4>Bog'langan xodimlar</h4>
+        ${cfg.linked.length ? `<table class="list">${cfg.linked.map((u) => `<tr><td><b>${esc(u.full_name)}</b></td>
+          <td class="muted">Telegram ID ${esc(u.tg_user_id)}</td>
+          <td class="right"><button class="btn small danger-text" data-unlink="${u.id}">Uzish</button></td></tr>`).join("")}</table>`
+          : `<p class="muted">Hali hech kim bog'lanmagan</p>`}
+        <details><summary class="muted">Boshqa bot ulash</summary>
+          <form id="ta-form" class="row-input" style="margin-top:8px">
+            <input id="ta-token" autocomplete="off" spellcheck="false" placeholder="Yangi bot tokeni" required>
+            <button class="btn">Almashtirish</button></form></details>
+      </section>`;
+  }
+  const view = layout(`<div class="toolbar"><h2>📱 Telegram ilova</h2></div>${body}`);
+  const save = async (payload) => viewTgApp(await api("PUT", "/api/integrations/tg_app", payload));
+  const form = $("#ta-form", view);
+  if (form) form.addEventListener("submit", safe(async (e) => {
+    e.preventDefault();
+    await save({ token: $("#ta-token", view).value.trim(), enabled: true });
+    toast("Telegram ilova yoqildi ✅");
+  }));
+  const sw = $("#ta-enabled", view);
+  if (sw) sw.addEventListener("change", safe(async () => { await save({ enabled: sw.checked }); }));
+  $$("[data-unlink]", view).forEach((b) => b.addEventListener("click", safe(async () => {
+    if (!confirm("Bu xodimning Telegram bog'lanishi uzilsinmi? Keyingi safar PIN so'raladi.")) return;
+    viewTgApp(await api("DELETE", `/api/integrations/tg_app/links/${b.dataset.unlink}`));
+  })));
+  if (cfg.enabled && !ready) {  // tunnel ishga tushguncha holatni yangilab turamiz
+    const timer = setTimeout(() => { if (location.hash === "#/integrations/tg-app") viewTgApp(); }, 4000);
+    state.leaveHook = () => clearTimeout(timer);
+  }
 }
 
 async function viewTelegram(cfgArg) {
@@ -4036,6 +4113,7 @@ const routes = [
   [/^#\/integrations$/, viewIntegrations, ["integrations"]],
   [/^#\/integrations\/telegram$/, viewTelegram, ["integrations"]],
   [/^#\/integrations\/customer-bot$/, viewCustomerBot, ["integrations"]],
+  [/^#\/integrations\/tg-app$/, viewTgApp, ["integrations"]],
   [/^#\/none$/, viewNoAccess],
 ];
 
@@ -4073,6 +4151,19 @@ window.addEventListener("hashchange", router);
   document.body.classList.toggle("side-collapsed", collapsed);
 })();
 
+// Telegram ilova (Mini App): Telegram sahifani ochganda manzilga #tgWebAppData=... (imzolangan ma'lumot) qo'shadi
+(function readTelegram() {
+  const h = location.hash.slice(1);
+  if (h.indexOf("tgWebAppData=") < 0) {
+    try { state.tgInit = sessionStorage.getItem("tg-init") || null; } catch { state.tgInit = null; }
+  } else {
+    state.tgInit = new URLSearchParams(h).get("tgWebAppData");
+    try { sessionStorage.setItem("tg-init", state.tgInit); } catch { /* ruxsat yo'q */ }
+    history.replaceState(null, "", location.pathname + "#/");
+  }
+  if (state.tgInit) document.body.classList.add("in-telegram");
+})();
+
 (async function start() {
   try {
     state.user = await api("GET", "/api/me");
@@ -4080,7 +4171,20 @@ window.addEventListener("hashchange", router);
   } catch {
     state.user = null;
   }
+  if (!state.user && state.tgInit) {  // Telegram orqali avtomatik kirish
+    try {
+      const res = await api("POST", "/api/tg/auth", { init_data: state.tgInit });
+      if (res.need_pin) state.tgName = res.tg_name;
+      else {
+        state.user = res;
+        await loadSettings();
+      }
+    } catch (e) {
+      state.tgError = e.message;
+    }
+  }
   router();
+  if (state.tgError && $("#login-error")) $("#login-error").textContent = state.tgError;
 })();
 
 window.__eproposLoaded = true;

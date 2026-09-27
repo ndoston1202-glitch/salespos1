@@ -125,3 +125,29 @@ class Notifier:
 
 notifier = Notifier()  # xodimlar boti (jurnal)
 customer_notifier = Notifier()  # mijozlar boti (chek, qarz, xabarlar)
+
+
+def check_init_data(token, init_data, max_age=86400):
+    """Telegram Mini App initData imzosini tekshiradi (core.telegram.org/bots/webapps#validating-data).
+    To'g'ri bo'lsa Telegram foydalanuvchisi (dict), aks holda None."""
+    import hashlib
+    import hmac
+    import time
+    try:
+        pairs = urllib.parse.parse_qsl(str(init_data or ""), keep_blank_values=True, strict_parsing=True)
+    except ValueError:
+        return None
+    data = dict(pairs)
+    got = data.pop("hash", "")
+    check = "\n".join(f"{k}={v}" for k, v in sorted(data.items()))
+    secret = hmac.new(b"WebAppData", token.encode(), hashlib.sha256).digest()
+    want = hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
+    if not got or not hmac.compare_digest(want, got):
+        return None
+    try:
+        if time.time() - int(data.get("auth_date", 0)) > max_age:
+            return None
+        user = json.loads(data.get("user") or "{}")
+    except ValueError:
+        return None
+    return user if user.get("id") else None

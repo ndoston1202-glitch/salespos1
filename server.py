@@ -340,6 +340,7 @@ CREATE TABLE IF NOT EXISTS integrations (
 MIGRATIONS = [
     ("users", "pin_salt", "TEXT"),
     ("users", "pin_hash", "TEXT"),
+    ("users", "tg_user_id", "TEXT"),  # Telegram ilovaga bog'langan akkaunt
 ]
 # Telefon va kompyuterda bir vaqtda (oflayn) yaratilgan yozuvlar to'qnashmasin: bu cheklovlarni dastur o'zi tekshiradi
 NO_UNIQUE_TABLES = ("users", "customers", "suppliers", "finance_types")
@@ -3490,8 +3491,64 @@ def telegram_public(conn):
 def list_integrations(conn, user, params, data, query):
     enabled, cfg = get_integration(conn, "telegram")
     c_enabled, c_cfg = get_integration(conn, "customer_bot")
+    a_enabled, a_cfg = get_integration(conn, "tg_app")
     return [{"key": "telegram", "enabled": enabled, "configured": bool(cfg.get("token") and cfg.get("chats"))},
-            {"key": "customer_bot", "enabled": c_enabled, "configured": bool(c_cfg.get("token"))}]
+            {"key": "customer_bot", "enabled": c_enabled, "configured": bool(c_cfg.get("token"))},
+            {"key": "tg_app", "enabled": a_enabled, "configured": bool(a_cfg.get("token"))}]
+
+
+def tg_app_public(conn):
+    enabled, cfg = get_integration(conn, "tg_app")
+    net = internet.status() if internet else None
+    return {"enabled": enabled, "token_set": bool(cfg.get("token")), "token_hint": mask_token(cfg.get("token")),
+            "bot": cfg.get("bot"), "internet": net, "hub": ROLE == "hub",
+            "menu_ok": bool(internet and internet.menu_url and net and internet.menu_url == net.get("url")),
+            "menu_error": internet.menu_error if internet else None,
+            "linked": rows(conn.execute("SELECT id, full_name, tg_user_id FROM users WHERE tg_user_id IS NOT NULL ORDER BY full_name"))}
+
+
+@route("GET", "/api/integrations/tg_app", ("integrations",))
+def get_tg_app(conn, user, params, data, query):
+    return tg_app_public(conn)
+
+
+@route("PUT", "/api/integrations/tg_app", ("integrations",))
+def save_tg_app(conn, user, params, data, query):
+    """Telegram ilova (Mini App): bot "EproPos" tugmasi orqali dastur Telegram ichida, istalgan internetdan ochiladi."""
+    if ROLE != "hub" or not internet:
+        raise ApiError(400, "Telegram ilova faqat asosiy kompyuterda yoqiladi")
+    _, cfg = get_integration(conn, "tg_app")
+    token = (data.get("token") or "").strip()
+    enabled = bool(data.get("enabled"))
+
+    def run():
+        new = dict(cfg)
+        if token:
+            if not re.fullmatch(r"\d{5,15}:[A-Za-z0-9_-]{20,100}", token):
+                raise ApiError(400, "Bot tokeni noto'g'ri ko'rinishda. BotFather bergan tokenni to'liq nusxalang")
+            try:
+                me = telegram.get_me(token)
+            except telegram.TelegramError as e:
+                raise ApiError(502, str(e))
+            new.update(token=token, bot={"username": me.get("username"), "name": me.get("first_name")})
+        if enabled and not new.get("token"):
+            raise ApiError(400, "Avval bot tokenini kiriting")
+        with db_lock:
+            save_integration(conn, "tg_app", enabled, new)
+            if enabled and not internet.enabled:
+                internet.enable(conn)  # ilova tunnel orqali ochiladi
+            write_journal(conn, user, "settings", entry("Telegram ilova " + ("yoqildi" if enabled else "o'chirildi"),
+                          "@" + str((new.get("bot") or {}).get("username") or "")), "tg_app")
+            conn.commit()
+            internet.set_tg_app(enabled, new.get("token"))
+            return tg_app_public(conn)
+    return Deferred(run)
+
+
+@route("DELETE", r"/api/integrations/tg_app/links/(\d+)", ("integrations",))
+def unlink_tg_app(conn, user, params, data, query):
+    conn.execute("UPDATE users SET tg_user_id = NULL WHERE id = ?", (params[0],))
+    return tg_app_public(conn)
 
 
 @route("GET", "/api/integrations/telegram", ("integrations",))
@@ -4817,7 +4874,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def handle_api(self, conn, method, path, data, query):
         if method == "POST" and path == "/api/login":
+            if self.relay:  # internetdan (tunnel) PIN bilan kirib bo'lmaydi - faqat Telegram ilova orqali
+                raise ApiError(403, "Internet orqali faqat Telegram ilova orqali kiriladi")
             return self.login(conn, data)
+        if method == "POST" and path == "/api/tg/auth":
+            return self.tg_auth(conn, data)
         if path == "/api/sync/hello":  # tarmoqda EproPos kompyuterini topish uchun
             return 200, sync_hello(conn), None
         if method == "POST" and path == "/api/sync/pair":
@@ -4883,6 +4944,12 @@ class Handler(BaseHTTPRequestHandler):
                 LOGIN_GUARD.fail(ip)
                 raise ApiError(401, "Login yoki parol noto'g'ri")
         LOGIN_GUARD.ok(ip)
+        status, user, headers = self.start_session(conn, row)
+        if TRUST_PROXY and str(data.get("pin") or "") == "1234":  # internetdagi serverda standart parol xavfli
+            user = dict(user, weak_pin=True)
+        return status, user, headers
+
+    def start_session(self, conn, row, via=""):
         token = secrets.token_urlsafe(32)
         expires = (datetime.now() + timedelta(days=SESSION_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("DELETE FROM sessions WHERE expires_at < ?", (now(),))
@@ -4895,15 +4962,44 @@ class Handler(BaseHTTPRequestHandler):
         user = public_user(row)
         agent = self.headers.get("User-Agent", "")
         device = ("Android ilova" if "EproPos" in agent else "iPhone/iPad" if re.search(r"iPhone|iPad", agent)
-                  else "Android" if "Android" in agent else "Kompyuter")
+                  else "Android" if "Android" in agent else "Kompyuter") + via
         rec = entry("Tizimga kirdi", f"{user['full_name']} ({user['username']}) · {device}",
                     [["Xodim", user["full_name"]], ["Login", user["username"]], ["Qurilma", device],
                      ["IP manzil", client_ip(self)]])
         write_journal(conn, user, "auth", rec, "login")
         self.telegram_out = telegram_message(conn, user, "auth", rec)
-        if TRUST_PROXY and str(data.get("pin") or "") == "1234":  # internetdagi serverda standart parol xavfli
-            user = dict(user, weak_pin=True)
         return 200, user, {"Set-Cookie": cookie}
+
+    def tg_auth(self, conn, data):
+        """Telegram ilovasi (Mini App): Telegram imzolagan initData tekshiriladi. Akkaunt bog'langan bo'lsa -
+        darhol kiradi, bo'lmasa bir marta PIN so'raladi va Telegram akkaunti xodimga bog'lanadi."""
+        enabled, cfg = get_integration(conn, "tg_app")
+        if not enabled or not cfg.get("token"):
+            raise ApiError(403, "Telegram ilova o'chirilgan")
+        tg = telegram.check_init_data(cfg["token"], data.get("init_data"))
+        if not tg:
+            raise ApiError(401, "Telegram ma'lumoti noto'g'ri yoki eskirgan - ilovani qayta oching")
+        tg_id = str(tg["id"])
+        key = client_ip(self) + "|tg" + tg_id
+        wait = LOGIN_GUARD.blocked(key)
+        if wait:
+            raise ApiError(429, f"Ko'p noto'g'ri urinish. {wait} soniyadan keyin qayta urining")
+        row = conn.execute("SELECT * FROM users WHERE tg_user_id = ? AND active = 1", (tg_id,)).fetchone()
+        if not row:
+            pin = str(data.get("pin") or "").strip()
+            if not pin:
+                name = " ".join(x for x in (tg.get("first_name"), tg.get("last_name")) if x)
+                return 200, {"need_pin": True, "tg_name": name}, None
+            row = find_pin_user(conn, pin)
+            if not row:
+                LOGIN_GUARD.fail(key)
+                raise ApiError(401, "PIN kod noto'g'ri")
+            conn.execute("UPDATE users SET tg_user_id = NULL WHERE tg_user_id = ?", (tg_id,))
+            conn.execute("UPDATE users SET tg_user_id = ? WHERE id = ?", (tg_id, row["id"]))
+            write_journal(conn, public_user(row), "users", entry("Telegram ilovaga bog'landi",
+                          f"{row['full_name']} · Telegram ID {tg_id}"), "tg_link")
+        LOGIN_GUARD.ok(key)
+        return self.start_session(conn, row, " · Telegram")
 
 
 # --- internet orqali sinxronlash (kompyuterda)
@@ -4918,9 +5014,9 @@ class RelayHandler(Handler):
     def dispatch(self, method):
         if not (internet and internet.enabled):
             return self.send_json(503, {"error": "Kompyuterda internet orqali ulanish o'chirilgan"})
-        if (method, urlparse(self.path).path) not in RELAY_PATHS:
+        if (method, urlparse(self.path).path) not in RELAY_PATHS and not internet.tg_app:
             return self.send_json(404, {"error": "Topilmadi"})
-        return super().dispatch(method)
+        return super().dispatch(method)  # Telegram ilova yoqilgan: sahifa + API (kirish faqat Telegram orqali)
 
 
 class InternetAccess:
@@ -4935,6 +5031,11 @@ class InternetAccess:
         self.published_at = 0
         self.publish_error = None
         self.wake = threading.Event()
+        tg_enabled, tg_cfg = get_integration(conn, "tg_app")
+        self.tg_app = tg_enabled and bool(tg_cfg.get("token"))
+        self.tg_token = tg_cfg.get("token")
+        self.menu_url = None
+        self.menu_error = None
         if sync.meta(conn, "internet") == "1":
             self.enable(conn)
 
@@ -4972,6 +5073,7 @@ class InternetAccess:
             url = self.tunnel.url
             if not url or not self.tunnel.enabled:
                 continue
+            self.update_menu(url)
             if url == self.published and time.time() - self.published_at < 6 * 3600:
                 continue
             try:
@@ -4979,6 +5081,32 @@ class InternetAccess:
                 self.published, self.published_at, self.publish_error = url, time.time(), None
             except Exception as e:
                 self.publish_error = f"Manzilni e'lon qilib bo'lmadi: {e}"
+
+    def update_menu(self, url):
+        """Telegram botning "EproPos" tugmasi tunnelning hozirgi manziliga ochiladi (manzil o'zgarganda yangilanadi)."""
+        if not self.tg_app or not self.tg_token or url == self.menu_url:
+            return
+        try:
+            telegram.call(self.tg_token, "setChatMenuButton", {"menu_button": json.dumps(
+                {"type": "web_app", "text": "EproPos", "web_app": {"url": url + "/"}})})
+            self.menu_url, self.menu_error = url, None
+        except telegram.TelegramError as e:
+            self.menu_error = str(e)
+
+    def set_tg_app(self, enabled, token):
+        old_token = self.tg_token
+        self.tg_app, self.tg_token = enabled, token
+        self.menu_url = None
+        if not enabled and old_token:  # o'chirilganda botdagi "EproPos" tugmasi olib tashlanadi
+            threading.Thread(target=lambda: self._reset_menu(old_token), daemon=True).start()
+        self.wake.set()
+
+    @staticmethod
+    def _reset_menu(token):
+        try:
+            telegram.call(token, "setChatMenuButton", {"menu_button": json.dumps({"type": "default"})})
+        except telegram.TelegramError:
+            pass
 
     def info(self):
         """Telefonlarga: internet kodi va hozirgi manzil (o'chirilgan bo'lsa None)."""

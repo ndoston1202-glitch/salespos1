@@ -116,6 +116,14 @@ curl -fsSL https://raw.githubusercontent.com/ndoston1202-glitch/salespos1/main/d
 - Telefon/iPad: brauzerda server manzilini oching yoki ilovada **Sinxronlash** → server manzili
 - Yangilash: dastur ichida **Sozlamalar → Yangilash** (yoki buyruqni qayta ishga tushirish)
 
+## 📱 Telegram ilova (iPhone va Android uchun eng oson yo'l)
+**Integratsiyalar → Telegram ilova**: @BotFather'da yangi bot yarating, tokenni kiriting — tayyor.
+- Xodim botni ochib, pastdagi **"EproPos"** tugmasini bosadi — dastur Telegram ichida ochiladi (iPhone ham, Android ham)
+- Istalgan Wi-Fi yoki mobil internetdan ishlaydi; ma'lumotlar kompyuterda — hamma o'zgarish darhol hammaga ko'rinadi
+- Birinchi marta PIN bilan Telegram akkaunti xodimga bog'lanadi, keyin avtomatik kiradi. Internetdan oddiy parol bilan
+  kirib bo'lmaydi — faqat Telegram imzosi bilan (xavfsizlik)
+- Kompyuter internetga bepul Cloudflare tunneli orqali chiqadi; kompyuterda EproPos ochiq bo'lishi kerak
+
 ## 🍎 iPhone ilova
 - Telefonda brauzerda kompyuter manzilini oching (masalan `http://192.168.1.10:8100`) → **Sozlamalar → Mobil ilova**:
   qurilmangizga mos ilova (Android APK yoki iPhone) taklif qilinadi. Kompyuterda shu sahifada QR kod ham bor
